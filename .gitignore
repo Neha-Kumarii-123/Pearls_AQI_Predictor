@@ -1,0 +1,9 @@
+# Virtual Environment
+venv/
+
+# Environment Variables / Secret Tokens
+.env
+
+# Python Cache files
+__pycache__/
+*.pyc
