@@ -59,6 +59,57 @@ class AirQualityFeaturePipeline:
     except Exception as err:
         logger.error(f"Failed to calculate Humidex due to math exception: {err}")
         return None
+   def generate_feature_vector(self) -> Optional [Dict[str, Any]]:
+      """
+        Step 3 Orchestrator Algorithm: Merges Stage 0 API telemetry with 
+        Stage 1 engineered features to construct a standardized, ML-ready 
+        feature vector.
+        """
+      logger.info(f"Generating live feature vector for target city: {self.city}")
+      #1. Ingest raw telemetry via AQICNDataIngestor
+      raw_data=self.ingestor.fetch_live_telemetry()
+      if not raw_data:
+         logger.error("Data ingestion failed; feature vector generation aborted.")
+         return None
+      metrics=self.ingestor.parse_station_metrics(raw_data)
+
+      # 2. Extract temporal parameters
+      time_feats=self.extract_time_features()
+
+      #3. Compute domain science metrics (Canadian Humidex)
+      humidex=self.calculate_humidex(
+         temp_c=metrics.get("temperature"),
+         humidity=metrics.get("humidity")
+      )
+
+      #4. Assemble production feature vector
+      feature_vector={
+         #Metadata
+         "city": self.city,
+         "timestamp": time_feats["timestamp"],
+
+         # Cyclic temporal features
+         "hour": time_feats["hour"],
+         "day": time_feats["day"],
+         "month": time_feats["month"],
+         "day_of_week": time_feats["day_of_week"],
+
+         #Physical Telemetry features
+         "temperature": metrics.get("temperature"),
+         "humidity": metrics.get("humidity"),   
+         "pm25": metrics.get("pm25"),
+         "pm10": metrics.get("pm10"),
+
+         #Engineered domain Metric
+         "humidex": humidex,
+
+         #Target Label
+         "target_aqi": metrics.get("aqi")
+      }
+      logger.info("Successfully assembled production feature vector.")
+      return feature_vector
+
+
 
 if __name__=="__main__":
    pipeline=AirQualityFeaturePipeline(city="karachi")
@@ -72,3 +123,11 @@ if __name__=="__main__":
    sample_humidex= pipeline.calculate_humidex(temp_c=32.0, humidity=75.0)
    print("\n--- ALGORITHM 2: HUMIDEX CALCULATED ---")
    print(f"Calculated Humidex: {sample_humidex}°C")
+
+   #Test Step 3: End to End Live feature vector generation
+   vector=pipeline.generate_feature_vector()
+   print("\n==========================================")
+   print("      PRODUCTION LIVE FEATURE VECTOR      ")
+   print("==========================================")
+   import json
+   print(json.dumps(vector, indent=4))
