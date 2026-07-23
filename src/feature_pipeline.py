@@ -1,6 +1,13 @@
+import os
+import pandas as pd
+import hopsworks
+from dotenv import load_dotenv
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
+
+# load environment variables from .env file
+load_dotenv()
 
 # import Data ingestor from src/ingestor.py
 from ingestor import AQICNDataIngestor
@@ -108,6 +115,52 @@ class AirQualityFeaturePipeline:
       }
       logger.info("Successfully assembled production feature vector.")
       return feature_vector
+   
+   def save_to_feature_store(self, feature_vector: Dict[str, Any]) -> bool:
+      """
+      Algorithm 4: Hopsworks Cloud Feature Store Integration.
+      Connects securely to Hopsworks, registers/fetches the feature Group, 
+      and pushes the production feature vector.
+
+      """
+      if not feature_vector:
+         logger.warning("No feature vector provided; skipping Hopsworks insertion.")
+         return False
+
+      # 1. fetch Hopsworks API key from environment variable 
+      api_key=os.getenv("HOPSWORKS_API_KEY")
+      if not api_key:
+         logger.error("HOPSWORKS_API_KEY is missing from environment variables (.env).")
+         raise ValueError("HOPSWORKS_API_KEY environment variable not set.")
+
+      try:
+         # 2. Login & Access Feature Store
+         logger.info("Authenticating with Hopsworks Cloud Feature Store...")
+         project = hopsworks.login(api_key_value=api_key)
+         fs = project.get_feature_store()
+
+         # 3. Convert feature vector dictionary into a Pandas DataFrame
+         df = pd.DataFrame([feature_vector])
+
+         # 4. Get or Create the Feature Group schema
+         logger.info("Registering/fetching Hopsworks Feature Group: karachi_aqi_features")
+         aqi_fg = fs.get_or_create_feature_group(
+            name="karachi_aqi_features",
+            version=1,
+            primary_key=["city", "timestamp"],
+            event_time="timestamp",
+            description="Live weather telemetry & Canadian Humidex domain features for AQI prediction"
+         )
+
+         # 5. Insert / Upsert data into Cloud Feature Store
+         logger.info("Pushing feature vector to Hopsworks Feature Store...")
+         aqi_fg.insert(df)
+         logger.info("Successfully pushed feature vector to Hopsworks Cloud!")
+         return True
+
+      except Exception as err:
+         logger.error(f"Failed to push feature vector to Hopsworks: {err}")
+         return False
 
 
 
@@ -131,3 +184,10 @@ if __name__=="__main__":
    print("==========================================")
    import json
    print(json.dumps(vector, indent=4))
+
+   # Test Step 4: Push vector to Hopsworks Cloud Feature Store
+   if vector:
+      logger.info("\n--- STEP 4: HOPSWORKS CLOUD INTEGRATION ---")
+      success = pipeline.save_to_feature_store(vector)
+      if success:
+         print("\n✅ Step 4 Complete: Live feature vector is now stored in Hopsworks Cloud!")
