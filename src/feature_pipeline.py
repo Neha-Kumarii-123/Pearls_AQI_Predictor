@@ -1,11 +1,14 @@
 import os
+
 import pandas as pd
 import hopsworks
 from dotenv import load_dotenv
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
+import tempfile
 
+os.environ["HOPSWORKS_CACHE_DIR"] = tempfile.gettempdir()
 # load environment variables from .env file
 load_dotenv()
 
@@ -120,8 +123,7 @@ class AirQualityFeaturePipeline:
       """
       Algorithm 4: Hopsworks Cloud Feature Store Integration.
       Connects securely to Hopsworks, registers/fetches the feature Group, 
-      and pushes the production feature vector.
-
+      and pushes the production feature vector using standard HTTP streaming.
       """
       if not feature_vector:
          logger.warning("No feature vector provided; skipping Hopsworks insertion.")
@@ -136,25 +138,38 @@ class AirQualityFeaturePipeline:
       try:
          # 2. Login & Access Feature Store
          logger.info("Authenticating with Hopsworks Cloud Feature Store...")
-         project = hopsworks.login(api_key_value=api_key)
+         project = hopsworks.login(
+            api_key_value=api_key,
+            host="eu-west.cloud.hopsworks.ai",
+            cert_folder=tempfile.gettempdir()
+            )
          fs = project.get_feature_store()
 
          # 3. Convert feature vector dictionary into a Pandas DataFrame
          df = pd.DataFrame([feature_vector])
+         # Cast missing/nullable numerical columns explicitly to float64 so Hopsworks detects the schema
+         for col in ["pm10", "pm25", "temperature", "humidity", "humidex", "target_aqi"]:
+             if col in df.columns:
+                df[col] = df[col].astype("float64")
 
          # 4. Get or Create the Feature Group schema
          logger.info("Registering/fetching Hopsworks Feature Group: karachi_aqi_features")
          aqi_fg = fs.get_or_create_feature_group(
             name="karachi_aqi_features",
-            version=1,
+            version=2,
             primary_key=["city", "timestamp"],
             event_time="timestamp",
+            online_enabled=True,
             description="Live weather telemetry & Canadian Humidex domain features for AQI prediction"
          )
 
          # 5. Insert / Upsert data into Cloud Feature Store
          logger.info("Pushing feature vector to Hopsworks Feature Store...")
-         aqi_fg.insert(df)
+         aqi_fg.insert(
+             df, 
+             online_ingestion=True,
+             write_options={"wait_for_job": False}
+            )
          logger.info("Successfully pushed feature vector to Hopsworks Cloud!")
          return True
 
