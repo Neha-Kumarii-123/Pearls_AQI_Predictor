@@ -1,14 +1,13 @@
 import os
-
+import sys
 import pandas as pd
-import hopsworks
 from dotenv import load_dotenv
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
 import tempfile
+from pathlib import Path
 
-os.environ["HOPSWORKS_CACHE_DIR"] = tempfile.gettempdir()
 # load environment variables from .env file
 load_dotenv()
 
@@ -21,6 +20,9 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger=logging.getLogger(__name__)
+
+# Import Hopsworks
+import hopsworks
 
 #2. Define FeaturePipeline class
 class AirQualityFeaturePipeline:
@@ -167,8 +169,7 @@ class AirQualityFeaturePipeline:
          logger.info("Pushing feature vector to Hopsworks Feature Store...")
          aqi_fg.insert(
              df, 
-             online_ingestion=True,
-             write_options={"wait_for_job": False}
+             write_options={"wait_for_job": True}
             )
          logger.info("Successfully pushed feature vector to Hopsworks Cloud!")
          return True
