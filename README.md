@@ -1,52 +1,112 @@
-# Pearls AQI Predictor 📡
 
-Hi! I am Neha Kumari, a final-year software engineering student. This is my very first AI and MLOps project, which I am building as part of the 10Pearls Shine Internship Program. 
+# Pearls AQI Predictor: Serverless MLOps Pipeline
 
-Instead of just running a simple data science script on my computer, my goal here is to build a real, working system that automatically updates itself without needing a server (100% serverless MLOps).
+Author: Neha Kumari  
+Project: End-to-End AQI Forecasting System  
+Program: 10Pearls Shine Internship Capstone  
 
----
-
-## 🎯 The Real-World Problem (Why I'm Building This)
-Living in Pakistan, we see how drastically air pollution impacts health and daily routines. Most apps only tell us how bad the air *currently* is. That is reactive. 
-
-I want to build a system that looks 3 days ahead. If we can predict a dangerous spike in the Air Quality Index (AQI) beforehand, schools, families, and companies can make smart choices—like switching to remote work or staying indoors—before the smog hits.
-
----
-
-## 🏗️ How I Am Building This (Step-by-Step Roadmap)
-I am breaking this big project down into smaller, logical steps:
-
-1. **Stage 0: Environment & API Connection (Completed) ✅**
-   * Set up a clean local Python virtual environment (`venv`).
-   * Secured my private API keys inside a hidden `.env` file so they never leak online.
-   * Wrote a script to successfully connect to the AQICN API and verified that I can fetch live data.
-
-2. **Phase 1 & 2: Feature Engineering & Historical Data (Next Step) ⏳**
-   * I will turn raw data into clean tables using Pandas.
-   * Create custom indicators like "how fast the AQI is changing" and gather historical data to train the model.
-
-3. **Phase 3 & 4: Machine Learning & Automation ⏳**
-   * Train supervised ML models (like Random Forest) to forecast the index.
-   * Build a beautiful, live dashboard using Streamlit.
-   * Automate everything using GitHub Actions so the script runs on its own every hour.
-
----
-
-## 💻 My Stage 0 Verification Log
-To prove my setup works perfectly, here is the exact live output I generated directly from my local VS Code terminal when connecting to the API:
+## System Architecture
 
 ```text
-📡 Requesting real-time air quality data for Karachi...
-=========================================
-✅ Connection Successful via GUI!
-📍 Location: Karachi US Consulate, Pakistan
-😷 Current AQI: 161
-📊 Primary Pollutant: pm25
-=========================================
-🛠️ My Tech Stack
-Language: Python
+[ AQICN API / Open-Meteo ]
+          │ (Hourly Telemetry)
+          ▼
+┌──────────────────────────────────────────────┐
+│ Feature Pipeline (src/feature_pipeline.py)   │
+│ - UTC Temporal Extraction                    │
+│ - Canadian Humidex Domain Calculation        │
+│ - AQI Rate-of-Change Computation             │
+└──────────────────────┬───────────────────────┘
+                       │ Streaming Ingestion (Kafka / Delta Lake)
+                       ▼
+         ┌────────────────────────────┐
+         │ Hopsworks Feature Store    │
+         │ (karachi_aqi_features v2)  │
+         └─────────────┬──────────────┘
+                       │ Feature Views
+      ┌────────────────┴────────────────┐
+      ▼                                 ▼
+┌───────────────────────────┐     ┌───────────────────────────┐
+│ Training Pipeline         │     │ Batch Inference & Dashboard │
+│ - Model Fine-Tuning       │     │ - Real-time AQI Forecast  │
+│ - XAI (SHAP Explanations) │     │ - Hazard Alert Trigger    │
+│ - Model Registry Log      │     │ - Streamlit Dashboard     │
+└───────────────────────────┘     └───────────────────────────┘
 
-Environment: VS Code, Git, Virtual Environments (venv), Dotenv (.env)
+```
 
-Libraries I will use: Requests (for data fetching), Pandas, Scikit-learn, Streamlit.
+## Project Overview
+
+This repository implements a serverless Machine Learning Operations (MLOps) system designed to predict Air Quality Index (AQI) levels for Karachi up to 3 days in advance.
+
+Rather than relying on static notebook scripts or manual data downloads, the system uses an automated pipeline structure that decouples feature engineering, model training, and batch inference through a central feature store.
+
+## Technical Stack
+
+* Language and Runtime: Python 3.10+ in containerized GitHub Codespaces (Linux environment)
+* Feature Store and Model Registry: Hopsworks Cloud (Delta Lake, confluent-kafka)
+* Data Engineering and ML: Pandas, NumPy, Scikit-Learn, Joblib, SHAP / LIME
+* Orchestration and CI/CD: GitHub Actions (Scheduled Cron Workflows)
+* Serving Layer: Streamlit Cloud
+
+## Key Engineering Decisions
+
+* Cloud Container Runtime: Developed within GitHub Codespaces to resolve platform-specific C-library and SSL certificate path discrepancies encountered on Windows OS during native SDK streaming.
+* UTC Temporal Alignment: Features use UTC Unix timestamps to maintain index consistency across distributed server runners and cloud storage backends.
+* Domain Feature Engineering: Integrated the Canadian Humidex formula alongside raw PM2.5 and PM10 metrics to capture atmospheric density and perceived heat impacts on pollutant dispersion.
+* Serverless Storage: Replaced raw CSV file storage with Hopsworks Cloud Feature Store to support low-latency streaming writes and consistent offline/online feature parity.
+
+## Current Pipeline Status
+
+* [x] Phase 1: Feature Pipeline and Infrastructure
+* Configured containerized cloud environment.
+* Built real-time API ingestion script for Karachi weather telemetry.
+* Calculated Canadian Humidex and time-based features.
+* Successfully registered and streamed live feature vectors into Hopsworks (`karachi_aqi_features` v2).
+
+
+* [ ] Phase 2: Historical Backfill and Exploratory Data Analysis
+* Historical data ingestion and AQI change-rate feature derivation.
+* Exploratory data analysis and correlation matrix generation.
+
+
+* [ ] Phase 3: Model Training and Explainable AI (XAI)
+* Model training, evaluation metrics logging, and SHAP model explainability.
+
+
+* [ ] Phase 4: Automation and Dashboard Deployment
+* Automated hourly execution via GitHub Actions and deployment of interactive Streamlit UI.
+
+
+
+## Quickstart Guide
+
+1. Repository Setup:
+
+```bash
+git clone [https://github.com/Neha-Kumarii-123/Pearls_AQI_Predictor.git](https://github.com/Neha-Kumarii-123/Pearls_AQI_Predictor.git)
+cd Pearls_AQI_Predictor
+
+```
+
+2. Environment Configuration:
+Create a `.env` file in the root directory:
+
+```env
+HOPSWORKS_API_KEY=your_hopsworks_api_key
+AQICN_API_KEY=your_aqicn_api_key
+
+```
+
+3. Run Live Feature Pipeline:
+
+```bash
+pip install -r requirements.txt
+python src/feature_pipeline.py
+
+```
+
+## Detailed Documentation
+
+For architectural trade-offs, step-by-step pipeline logs, EDA charts, and model evaluation metrics, see the comprehensive project report in [REPORT.md].
 
