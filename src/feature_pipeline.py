@@ -114,6 +114,7 @@ class AirQualityFeaturePipeline:
 
          #Engineered domain Metric
          "humidex": humidex,
+         "pm25_change_rate": 0.0,
 
          #Target Label
          "target_aqi": metrics.get("aqi")
@@ -150,7 +151,7 @@ class AirQualityFeaturePipeline:
          # 3. Convert feature vector dictionary into a Pandas DataFrame
          df = pd.DataFrame([feature_vector])
          # Cast missing/nullable numerical columns explicitly to float64 so Hopsworks detects the schema
-         for col in ["pm10", "pm25", "temperature", "humidity", "humidex", "target_aqi"]:
+         for col in ["pm10", "pm25", "temperature", "humidity", "humidex","pm25_change_rate", "target_aqi"]:
              if col in df.columns:
                 df[col] = df[col].astype("float64")
 

@@ -141,11 +141,14 @@ def upload_to_hopsworks(df):
     project = hopsworks.login(api_key_value=api_key)
     fs = project.get_feature_store()
     
-    # Get existing Feature Group Version 2
-    print(" Accessing Feature Group: karachi_aqi_features (v2)...")
-    feature_group = fs.get_feature_group(
+    # Get or create Feature Group Version 2
+    print(" Accessing/Creating Feature Group: karachi_aqi_features (v2)...")
+    feature_group = fs.get_or_create_feature_group(
         name="karachi_aqi_features",
-        version=2
+        version=2,
+        primary_key=["city", "timestamp"],
+        event_time="timestamp",
+        description="Live weather telemetry & Canadian Humidex domain features for AQI prediction"
     )
     
     # Batch insert historical data
