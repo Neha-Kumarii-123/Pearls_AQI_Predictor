@@ -111,18 +111,18 @@ def process_features(df):
     df["month"] = df["timestamp_dt"].dt.month.astype('int64')
     df["day_of_week"] = df["timestamp_dt"].dt.dayofweek.astype('int64')
     
-    # 5. Derived Feature: Rolling 1-hour change in PM2.5 (Rate of Change)
-    df["pm25_change_rate"] = df["pm25"].diff().fillna(0.0)
+    # 5. Derived Feature: AQI Change Rate (matching slide requirement)
+    df["aqi_change_rate"] = df["target_aqi"].diff().fillna(0.0)
     
     # Convert all numeric float columns to float64 (double) to match Hopsworks schema
-    float_cols = ["pm25", "pm10", "temperature", "humidity", "humidex", "pm25_change_rate", "target_aqi"]
+    float_cols = ["pm25", "pm10", "temperature", "humidity", "humidex", "aqi_change_rate", "target_aqi"]
     df[float_cols] = df[float_cols].astype('float64')
     
     # Clean up columns to match Hopsworks Feature Group schema exactly
     feature_cols = [
         "city", "timestamp", "pm25", "pm10", 
         "temperature", "humidity", "humidex", 
-        "pm25_change_rate",
+        "aqi_change_rate",
         "hour", "day", "month", "day_of_week", "target_aqi"
     ]
     
@@ -142,10 +142,10 @@ def upload_to_hopsworks(df):
     fs = project.get_feature_store()
     
     # Get or create Feature Group Version 2
-    print(" Accessing/Creating Feature Group: karachi_aqi_features (v2)...")
+    print(" Accessing/Creating Feature Group: karachi_aqi_features (v3)...")
     feature_group = fs.get_or_create_feature_group(
         name="karachi_aqi_features",
-        version=2,
+        version=3,
         primary_key=["city", "timestamp"],
         event_time="timestamp",
         description="Live weather telemetry & Canadian Humidex domain features for AQI prediction"
