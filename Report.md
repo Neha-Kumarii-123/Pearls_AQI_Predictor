@@ -32,21 +32,21 @@ To prevent accidental credential leaks in public version control, all authentica
 The feature pipeline operates as an automated ingestion engine responsible for fetching live atmospheric telemetry, executing feature engineering, and streaming structured vectors into the feature store.
 
 ```text
-[ AQICN REST API ]
+[ AQICN REST API / Open-Meteo API ]
        │
        ├── Telemetry (PM2.5, PM10, Temperature, Humidity)
        ▼
 ┌────────────────────────────────────────────────────────┐
-│ Feature Pipeline Node                                  │
+│ Feature Pipeline / Backfill Node                       │
 │ 1. Time Normalization (UTC Unix Epoch)                 │
-│ 2. Domain Feature: Canadian Humidex Algorithm         │
-│ 3. Derived Rate-of-Change Feature (Delta PM2.5)        │
+│ 2. Domain Feature: Canadian Humidex Algorithm          │
+│ 3. Derived Signal: AQI Change Rate (aqi_change_rate)   │
 └──────────────────────────┬─────────────────────────────┘
-                           │ Low-Latency Streaming Ingestion
+                           │ Batch & Streaming Ingestion
                            ▼
           ┌──────────────────────────────────┐
           │ Hopsworks Cloud Feature Store    │
-          │ Feature Group: karachi_aqi_v2    │
+          │ Feature Group: karachi_aqi_v3    │
           └──────────────────────────────────┘
 
 ```
@@ -78,23 +78,25 @@ e = 6.11 * 10^((7.5 * T) / (237.7 + T)) * (H / 100)
 * T = Air Temperature (°C)
 * H = Relative Humidity (%)
 
-### Feature Store Schema (karachi_aqi_features v2)
+### Feature Store Schema (karachi_aqi_features v3)
 
-Features are registered and stored in the Hopsworks Cloud Feature Store under Feature Group Version 2:
+Features are registered and stored in the Hopsworks Cloud Feature Store under Feature Group Version 3:
 
 | Feature Name | Data Type | Description |
 | --- | --- | --- |
-| city | String | Target location identifier (karachi) |
-| timestamp | BigInt | Primary key index (UTC Unix timestamp) |
+| city | String | Target location identifier (karachi) - Primary Key |
+| timestamp | BigInt | Primary key index & event time (UTC Unix timestamp) |
 | pm25 | Double | Primary pollutant metric |
 | pm10 | Double | Coarse particle metric |
 | temperature | Double | Raw ambient temperature |
 | humidity | Double | Raw relative humidity |
 | humidex | Double | Derived atmospheric density heat metric |
+| aqi_change_rate | Double | Derived rate-of-change signal ($\Delta \text{AQI}_t = \text{AQI}_t - \text{AQI}_{t-1}$) |
 | hour | Int | Hourly temporal signal (0–23) |
-| day | Int | Day of month |
+| day | Int | Day of month (1–31) |
 | month | Int | Month index (1–12) |
 | day_of_week | Int | Day index (0–6) |
+| target_aqi | Double | Ground truth target variable for training |
 
 ---
 
@@ -107,25 +109,20 @@ This project addresses the core requirements set by the industrial evaluation pa
 3. Feature Store Integration: Successfully registered schema and streamed online data into Hopsworks Cloud via Kafka/Delta Lake drivers.
 
 ---
+## 5. Backfill Execution & Next Steps
 
-## 5. Next Execution Steps
+### Phase 2: Historical Backfill Execution (`src/backfill_pipeline.py`) — [COMPLETED]
+* **Multi-Source Ingestion:** Ingested 2 years (Aug 2024 to July 2026) of unbroken hourly Karachi telemetry from Open-Meteo Archival APIs (~17.4K rows).
+* **Derived Signals:** Computed first-order hourly rate-of-change (`aqi_change_rate`) across historical sequences.
+* **Feature Store Integration:** Successfully registered and backfilled batch historical vectors into Hopsworks Feature Store Version 3 (`karachi_aqi_features` v3).
 
-With Phase 1 (Feature Pipeline & Infrastructure Setup) complete and verified on the online cloud dashboard, the immediate development milestones are:
+### Phase 3: Supervised Model Training & Model Registry — [IN PROGRESS]
+* Train baseline and sequential ML models (Random Forest, LightGBM, XGBoost).
+* Read historical feature groups directly from Hopsworks Feature Store (v3).
+* Register optimal trained model artifacts in the Hopsworks Model Registry.
+* Evaluate performance metrics (MAE, RMSE, R²).
 
-1. Phase 2: Historical Backfill Script (src/backfill_pipeline.py)
-* Fetch past 6 months to 2 years of historical Karachi atmospheric telemetry.
-* Compute rolling vector differences (aqi_change_rate) across historical sequences.
-* Execute Exploratory Data Analysis (EDA) to produce feature correlation matrices and trend graphs.
-
-
-2. Phase 3: Supervised Model Training & Model Registry
-* Train baseline and sequential ML models (Random Forest, LightGBM, LSTM/XGBoost).
-* Register optimal model artifacts in the Hopsworks Model Registry.
-* Generate SHAP / LIME feature importance plots for model explainability.
-
-
-3. Phase 4: Serving & Automation
+### Phase 4: Serving & Automation — [UPCOMING]
 * Deploy real-time interactive UI via Streamlit.
 * Configure automated hourly cron execution using GitHub Actions.
-
 
