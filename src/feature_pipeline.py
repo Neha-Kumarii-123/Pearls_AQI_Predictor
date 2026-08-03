@@ -217,7 +217,7 @@ class AirQualityFeaturePipeline:
          logger.info("Registering/fetching Hopsworks Feature Group: karachi_aqi_features")
          aqi_fg = fs.get_or_create_feature_group(
             name="karachi_aqi_features",
-            version=3,
+            version=4,
             primary_key=["city", "timestamp"],
             event_time="timestamp",
             online_enabled=True,

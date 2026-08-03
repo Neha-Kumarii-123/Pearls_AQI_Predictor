@@ -97,7 +97,7 @@ def process_features(df):
     # 1. Constant Identifier
     df["city"] = "karachi"
     # Target variable (PM2.5 value as target_aqi)
-    df["target_aqi"] = df["pm25"]
+    df["target_aqi"] = np.select([(df["pm25"]<=10), (df["pm25"]<=25), (df["pm25"]<=50), (df["pm25"]<=75)], [30.0, 60.0, 90.0, 120.0], default=150.0)
     
     # 2. Convert datetime to UTC Unix timestamp in milliseconds
     df["timestamp"] = df["timestamp_dt"].astype('int64') // 10**6
@@ -142,10 +142,10 @@ def upload_to_hopsworks(df):
     fs = project.get_feature_store()
     
     # Get or create Feature Group Version 2
-    print(" Accessing/Creating Feature Group: karachi_aqi_features (v3)...")
+    print(" Accessing/Creating Feature Group: karachi_aqi_features (v4)...")
     feature_group = fs.get_or_create_feature_group(
         name="karachi_aqi_features",
-        version=3,
+        version=4,
         primary_key=["city", "timestamp"],
         event_time="timestamp",
         description="Live weather telemetry & Canadian Humidex domain features for AQI prediction"
