@@ -1,3 +1,4 @@
+import requests
 import os
 import sys
 import pandas as pd
@@ -50,10 +51,47 @@ class AirQualityFeaturePipeline:
          "day": now.day,
          "month":now.month,
          "day_of_week": now.weekday(),          # 0=Monday, 6=Sunday
-         "timestamp": int(now.timestamp())  # Unix epoch time
+         "timestamp": int(now.timestamp()*1000)  # Unix epoch time
         }
 
 
+
+   def fetch_openweather_telemetry(self) -> Optional[Dict[str, Any]]:
+        """
+        Fetches real-time dynamic weather and pollution telemetry directly via OpenWeatherMap API.
+        """
+        api_key = os.getenv("OPENWEATHER_API_KEY")
+        if not api_key:
+            logger.error("OPENWEATHER_API_KEY is missing in .env file.")
+            return None
+
+        # Karachi coordinates (Latitude, Longitude)
+        lat, lon = 24.8607, 67.0011
+        
+        pollution_url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={api_key}"
+        weather_url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric"
+
+        try:
+            p_res = requests.get(pollution_url, timeout=10).json()
+            w_res = requests.get(weather_url, timeout=10).json()
+
+            components = p_res["list"][0]["components"]
+            main_data = p_res["list"][0]["main"]
+
+            # Direct target AQI calculation as per mentor guidelines (Scale 1-5 mapped to index range)
+            raw_aqi_index = main_data.get("aqi", 3)
+            target_aqi = float(raw_aqi_index * 30)  # Maps 1->30, 2->60, 3->90, 4->120, 5->150+
+
+            return {
+                "pm25": float(components.get("pm2_5", 25.0)),
+                "pm10": float(components.get("pm10", 45.0)),
+                "temperature": float(w_res["main"]["temp"]),
+                "humidity": float(w_res["main"]["humidity"]),
+                "aqi": target_aqi
+            }
+        except Exception as e:
+            logger.error(f"OpenWeather Fetch Error: {e}")
+            return None
    def calculate_humidex(self, temp_c: Optional[float], humidity: Optional[float]) -> Optional[float]:
     """
     Algorithm 2: Canadian Humidex Domain Calculation.
@@ -78,12 +116,16 @@ class AirQualityFeaturePipeline:
         feature vector.
         """
       logger.info(f"Generating live feature vector for target city: {self.city}")
-      #1. Ingest raw telemetry via AQICNDataIngestor
-      raw_data=self.ingestor.fetch_live_telemetry()
-      if not raw_data:
-         logger.error("Data ingestion failed; feature vector generation aborted.")
-         return None
-      metrics=self.ingestor.parse_station_metrics(raw_data)
+
+      # 1. Ingest raw telemetry (Primary: OpenWeather, Fallback: AQICN)
+      metrics = self.fetch_openweather_telemetry()
+      if not metrics:
+          logger.warning("OpenWeather ingestion failed; falling back to AQICN ingestor...")
+          raw_data = self.ingestor.fetch_live_telemetry()
+          if not raw_data:
+              logger.error("All data ingestion sources failed; feature vector generation aborted.")
+              return None
+          metrics = self.ingestor.parse_station_metrics(raw_data)
 
       # 2. Extract temporal parameters
       time_feats=self.extract_time_features()
@@ -94,9 +136,25 @@ class AirQualityFeaturePipeline:
          humidity=metrics.get("humidity")
       )
 
-      #4. Assemble production feature vector
-      feature_vector={
-         #Metadata
+      # 4. Handle null/missing values gracefully for ML compatibility
+      pm25_val = metrics.get("pm25")
+      pm10_val = metrics.get("pm10")
+      target_aqi_val = metrics.get("aqi")
+
+      # Fallback for PM10 if missing (typically ~1.6x to 2.0x of PM2.5 in urban areas)
+      if pm10_val is None and pm25_val is not None:
+          pm10_val = round(pm25_val * 1.8, 2)
+      elif pm10_val is None:
+          pm10_val = 40.0 # Safe default value
+
+      # Target Label Validation (Option A: Pure ML Training)
+      if target_aqi_val is None:
+          logger.error("Target AQI is missing from API telemetry! Skipping record creation to prevent fake training targets.")
+          return None
+
+      # 5. Assemble production feature vector
+      feature_vector = {
+         # Metadata
          "city": self.city,
          "timestamp": time_feats["timestamp"],
 
@@ -106,18 +164,18 @@ class AirQualityFeaturePipeline:
          "month": time_feats["month"],
          "day_of_week": time_feats["day_of_week"],
 
-         #Physical Telemetry features
-         "temperature": metrics.get("temperature"),
-         "humidity": metrics.get("humidity"),   
-         "pm25": metrics.get("pm25"),
-         "pm10": metrics.get("pm10"),
+         # Physical Telemetry features
+         "temperature": metrics.get("temperature", 30.0),
+         "humidity": metrics.get("humidity", 60.0),   
+         "pm25": pm25_val,
+         "pm10": pm10_val,
 
-         #Engineered domain Metric
-         "humidex": humidex,
+         # Engineered domain Metric
+         "humidex": humidex if humidex is not None else 35.0,
          "aqi_change_rate": 0.0,
 
-         #Target Label
-         "target_aqi": metrics.get("aqi")
+         # Target Label
+         "target_aqi": target_aqi_val
       }
       logger.info("Successfully assembled production feature vector.")
       return feature_vector
