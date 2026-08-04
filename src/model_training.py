@@ -1,126 +1,74 @@
 import os
-import joblib
-import numpy as np
-import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
-from xgboost import XGBRegressor
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import hopsworks
 from dotenv import load_dotenv
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.ensemble import RandomForestRegressor
 
-# Load environment variables
 load_dotenv()
 
-def train_and_register_model():
+def fetch_historical_data():
     # 1. Connect to Hopsworks Feature Store
-    api_key = os.getenv("HOPSWORKS_API_KEY")
-    if not api_key:
-        raise ValueError("HOPSWORKS_API_KEY not found in environment variables.")
-
-    print(" Connecting to Hopsworks Feature Store...")
-    project = hopsworks.login(api_key_value=api_key)
+    print("Connecting to Hopsworks...")
+    project = hopsworks.login(api_key_value=os.getenv("HOPSWORKS_API_KEY"))
     fs = project.get_feature_store()
 
-    # 2. Get Feature Group v3
-    print(" Fetching Feature Group: karachi_aqi_features (v3)...")
-    aqi_fg = fs.get_feature_group(name="karachi_aqi_features", version=3)
+    # 2. Read directly from Feature Group v2
+    print("Fetching historical features and targets from Feature Group 'karachi_aqi_features' v2...")
+    fg = fs.get_feature_group(name="karachi_aqi_features", version=2)
+    df = fg.read()
 
-   # 3. Create or Get Feature View (Safe Hopsworks SDK Pattern)
-    print("✨ Fetching or Creating Feature View: karachi_aqi_feature_view (v3)...")
+    print(f" Successfully fetched historical data! Shape: {df.shape}")
+    print("Available columns:", df.columns.tolist())
     
-    ds_query = aqi_fg.select_all()
+    # Target values check karne ke liye lines
+    print(" Unique Target AQI values sample:", df['target_aqi'].nunique())
+    print(" Target AQI Summary:\n", df['target_aqi'].describe())
+    print("\n--- First 10 Rows ---")
+    print(df.head(10))
+    
+    return df
 
-    # Attempt to retrieve existing Feature View
-    feature_view = None
-    try:
-        feature_view = fs.get_feature_view(name="karachi_aqi_feature_view", version=3)
-    except Exception as e:
-        print(f"ℹ️ Exception while fetching Feature View: {e}")
 
-    # If Hopsworks returned None or threw an exception, explicitly create a new Feature View
-    if feature_view is None:
-        print("⚠️ Feature View not found (or returned None). Creating new Feature View v3...")
-        feature_view = fs.create_feature_view(
-            name="karachi_aqi_feature_view",
-            version=3,
-            query=ds_query,
-            labels=["target_aqi"],
-            description="Feature View for Karachi AQI prediction models"
-        )
-        print("✅ New Feature View created successfully!")
-    else:
-        print("ℹ️ Successfully retrieved existing Feature View.")
-
-    # 4. Read Data via Feature View Engine
-    print("⏳ Reading dataset via Feature View...")
-    df = feature_view.read()
-
-    # Sort chronologically by timestamp
-    df = df.sort_values(by="timestamp").reset_index(drop=True)
-
-    # Define Feature matrix (X) and Target (y)
-    feature_cols = ["pm10", "pm25", "temperature", "humidity", "humidex", "aqi_change_rate", "hour", "day", "month", "day_of_week"]
-    target_col = "target_aqi"
-
+def prepare_training_data(df):
+    """
+    Separate the regression target from the feature matrix and scale only the
+    feature columns. `target_aqi` is preserved as the direct regression label.
+    """
+    feature_cols = [
+        col for col in df.columns
+        if col not in {"city", "timestamp", "target_aqi"}
+    ]
     X = df[feature_cols]
-    y = df[target_col]
+    y = df["target_aqi"]
 
-    # Time-series Train/Test Split (80% Train, 20% Test)
-    split_idx = int(len(df) * 0.8)
-    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-    y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
-
-    print(f" Dataset Loaded: Total={len(df)}, Train={len(X_train)}, Test={len(X_test)}")
-
-    # 5. Model Training & Evaluation
-    print(" Training XGBoost Regressor Model...")
-    model = XGBRegressor(
-        n_estimators=100,
-        learning_rate=0.05,
-        max_depth=6,
-        random_state=42
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
     )
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    return X_train_scaled, X_test_scaled, y_train, y_test
+
+
+def train_baseline_model(X_train, X_test, y_train, y_test):
+    model = RandomForestRegressor(n_estimators=200, random_state=42)
     model.fit(X_train, y_train)
 
-    # Predictions
-    y_pred = model.predict(X_test)
-
-    # Compute Evaluation Metrics
-    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    mae = mean_absolute_error(y_test, y_pred)
-    r2 = r2_score(y_test, y_pred)
-
-    print("\n" + "="*40)
-    print(" MODEL EVALUATION METRICS:")
-    print(f"  • Root Mean Squared Error (RMSE) : {rmse:.4f}")
-    print(f"  • Mean Absolute Error (MAE)     : {mae:.4f}")
-    print(f"  • R² Score                      : {r2:.4f}")
-    print("="*40 + "\n")
-
-    # 6. Save Model Local Artifact
-    model_dir = "models"
-    os.makedirs(model_dir, exist_ok=True)
-    model_path = os.path.join(model_dir, "aqi_xgboost_model.pkl")
-    joblib.dump(model, model_path)
-    print(f" Model saved locally at: {model_path}")
-
-    # 7. Register Model to Hopsworks Model Registry
-    mr = project.get_model_registry()
-
+    preds = model.predict(X_test)
     metrics = {
-        "rmse": float(rmse),
-        "mae": float(mae),
-        "r2_score": float(r2)
+        "mae": mean_absolute_error(y_test, preds),
+        "rmse": mean_squared_error(y_test, preds) ** 0.5,
+        "r2": r2_score(y_test, preds),
     }
+    print("📈 Baseline model evaluation:", metrics)
+    return model, metrics
 
-    print(" Uploading model to Hopsworks Model Registry...")
-    hopsworks_model = mr.python.create_model(
-        name="karachi_aqi_xgboost_model",
-        metrics=metrics,
-        description="XGBoost model trained on historical telemetry to predict Karachi AQI"
-    )
-    hopsworks_model.save(model_path)
-    print(" Model successfully registered in Hopsworks Model Registry!")
 
 if __name__ == "__main__":
-    train_and_register_model()
+    df = fetch_historical_data()
+    X_train, X_test, y_train, y_test = prepare_training_data(df)
+    train_baseline_model(X_train, X_test, y_train, y_test)

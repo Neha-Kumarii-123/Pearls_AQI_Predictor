@@ -77,14 +77,13 @@ class AirQualityFeaturePipeline:
 
             components = p_res["list"][0]["components"]
             main_data = p_res["list"][0]["main"]
-
-            # Direct target AQI calculation as per mentor guidelines (Scale 1-5 mapped to index range)
-            raw_aqi_index = main_data.get("aqi", 3)
-            target_aqi = float(raw_aqi_index * 30)  # Maps 1->30, 2->60, 3->90, 4->120, 5->150+
+            pm25 = float(components.get("pm2_5", 25.0))
+            pm10 = float(components.get("pm10", 45.0))
+            target_aqi = float(main_data.get("aqi", 3))
 
             return {
-                "pm25": float(components.get("pm2_5", 25.0)),
-                "pm10": float(components.get("pm10", 45.0)),
+                "pm25": pm25,
+                "pm10": pm10,
                 "temperature": float(w_res["main"]["temp"]),
                 "humidity": float(w_res["main"]["humidity"]),
                 "aqi": target_aqi
@@ -139,7 +138,7 @@ class AirQualityFeaturePipeline:
       # 4. Handle null/missing values gracefully for ML compatibility
       pm25_val = metrics.get("pm25")
       pm10_val = metrics.get("pm10")
-      target_aqi_val = metrics.get("aqi")
+      target_aqi_val = metrics.get("aqi", metrics.get("aqi_target"))
 
       # Fallback for PM10 if missing (typically ~1.6x to 2.0x of PM2.5 in urban areas)
       if pm10_val is None and pm25_val is not None:
@@ -217,7 +216,7 @@ class AirQualityFeaturePipeline:
          logger.info("Registering/fetching Hopsworks Feature Group: karachi_aqi_features")
          aqi_fg = fs.get_or_create_feature_group(
             name="karachi_aqi_features",
-            version=4,
+            version=2,
             primary_key=["city", "timestamp"],
             event_time="timestamp",
             online_enabled=True,

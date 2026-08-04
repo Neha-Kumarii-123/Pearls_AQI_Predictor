@@ -62,6 +62,7 @@ class AQICNDataIngestor:
 
         return {
             "station_name": raw_data.get("city", {}).get("name", "Unknown"),
+            "aqi": raw_data.get("aqi", None),
             "aqi_target": raw_data.get("aqi", None),
             "dominant_pollutant": raw_data.get("dominentpol", "N/A"),
             "pm25": extract_val("pm25"),

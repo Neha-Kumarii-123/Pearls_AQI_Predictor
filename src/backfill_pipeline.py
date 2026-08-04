@@ -35,7 +35,7 @@ def fetch_historical_data(latitude=24.8607, longitude=67.0011, start_date="2024-
         "longitude": longitude,
         "start_date": start_date,
         "end_date": end_date,
-        "hourly": ["pm10", "pm2_5"]
+        "hourly": ["pm10", "pm2_5", "us_aqi"]
     }
     air_responses = openmeteo.weather_api(air_quality_url, params=air_params)
     air_res = air_responses[0]
@@ -51,7 +51,8 @@ def fetch_historical_data(latitude=24.8607, longitude=67.0011, start_date="2024-
     df_air = pd.DataFrame({
         "timestamp_dt": air_dates,
         "pm25": hourly_air.Variables(1).ValuesAsNumpy(),
-        "pm10": hourly_air.Variables(0).ValuesAsNumpy()
+        "pm10": hourly_air.Variables(0).ValuesAsNumpy(),
+        "target_aqi": hourly_air.Variables(2).ValuesAsNumpy()
     })
 
     # 2. Fetch Weather historical metrics (Temperature & Humidity)
@@ -91,13 +92,15 @@ def fetch_historical_data(latitude=24.8607, longitude=67.0011, start_date="2024-
 def process_features(df):
     """
     Applies feature engineering transformations matching the live pipeline schema.
+    Keeps `target_aqi` as the direct source AQI label, without any PM-to-AQI formula.
     """
     print(" Processing features (Humidex, Temporal signals, Rate of Change)...")
     
     # 1. Constant Identifier
     df["city"] = "karachi"
-    # Target variable (PM2.5 value as target_aqi)
-    df["target_aqi"] = np.select([(df["pm25"]<=10), (df["pm25"]<=25), (df["pm25"]<=50), (df["pm25"]<=75)], [30.0, 60.0, 90.0, 120.0], default=150.0)
+
+    # Target variable remains the direct AQI value from the source dataset.
+    df["target_aqi"] = df["target_aqi"].astype("float64")
     
     # 2. Convert datetime to UTC Unix timestamp in milliseconds
     df["timestamp"] = df["timestamp_dt"].astype('int64') // 10**6
@@ -127,8 +130,7 @@ def process_features(df):
     ]
     
     return df[feature_cols]
-
-def upload_to_hopsworks(df):
+def upload_to_hopsworks(dataframe):
     """
     Connects to Hopsworks Feature Store and performs a batch upload of historical data.
     """
@@ -141,19 +143,25 @@ def upload_to_hopsworks(df):
     project = hopsworks.login(api_key_value=api_key)
     fs = project.get_feature_store()
     
-    # Get or create Feature Group Version 2
-    print(" Accessing/Creating Feature Group: karachi_aqi_features (v4)...")
+    # Get or create Feature Group 
+    print(" Accessing/Creating Feature Group: karachi_aqi_features (v2)...")
     feature_group = fs.get_or_create_feature_group(
         name="karachi_aqi_features",
-        version=4,
+        version=2,
         primary_key=["city", "timestamp"],
         event_time="timestamp",
-        description="Live weather telemetry & Canadian Humidex domain features for AQI prediction"
+        description="Live weather telemetry & Canadian Humidex domain features for AQI prediction",
+        online_enabled=False
     )
     
-    # Batch insert historical data
-    print(f" Inserting {len(df)} historical feature rows into Hopsworks...")
-    feature_group.insert(df, write_options={"wait_for_job": True})
+    # Batch insert historical data using dataframe parameter safely
+    print(f" Inserting {len(dataframe)} historical feature rows into Hopsworks...")
+    batch_size = 3000
+    for i in range(0, len(dataframe), batch_size):
+        df_batch = dataframe.iloc[i : i + batch_size]
+        print(f"Inserting rows {i} to {i + len(df_batch)} into Hopsworks...")
+        feature_group.insert(df_batch, write_options={"wait_for_job": True})
+        
     print(" Historical backfill insertion completed successfully!")
 
 if __name__ == "__main__":
