@@ -1,12 +1,16 @@
 import os
 import joblib
 import pandas as pd
+import numpy as np
 import hopsworks
 from dotenv import load_dotenv
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.ensemble import RandomForestRegressor
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
 
 # Load environment variables
 load_dotenv()
@@ -37,7 +41,7 @@ def prepare_training_data(df):
         X, y, test_size=0.2, random_state=42
     )
 
-    # Standardize feature scales
+    # Standardize feature scales (Extremely important for Neural Networks)
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
@@ -45,47 +49,49 @@ def prepare_training_data(df):
     return X_train_scaled, X_test_scaled, y_train, y_test
 
 
-def tune_random_forest(X_train, X_test, y_train, y_test):
-    """Performs hyperparameter tuning for Random Forest using GridSearchCV."""
-    print("\nStarting Hyperparameter Tuning for Random Forest (GridSearchCV)...")
-    
-    base_model = RandomForestRegressor(random_state=42)
-    
-    # Defining parameter grid to search for best combination
-    param_grid = {
-        'n_estimators': [100, 200],
-        'max_depth': [15, 25, None],
-        'min_samples_split': [2, 5]
-    }
+def train_deep_learning_model(X_train, X_test, y_train, y_test):
+    """Builds, trains, and evaluates a TensorFlow Sequential Neural Network."""
+    print("\nBuilding and Training TensorFlow Neural Network...")
 
-    grid_search = GridSearchCV(
-        estimator=base_model,
-        param_grid=param_grid,
-        cv=3,
-        scoring='r2',
-        n_jobs=-1,
+    # Define Neural Network architecture
+    model = Sequential([
+        Dense(64, activation='relu', input_shape=(X_train.shape[1],)),
+        Dropout(0.2),
+        Dense(32, activation='relu'),
+        Dropout(0.2),
+        Dense(1)  # Output layer for regression (AQI prediction)
+    ])
+
+    model.compile(optimizer='adam', loss='mean_squared_error', metrics=['mae'])
+
+    # Early stopping to prevent overfitting
+    early_stop = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+
+    # Train the model
+    history = model.fit(
+        X_train, y_train,
+        validation_split=0.2,
+        epochs=100,
+        batch_size=32,
+        callbacks=[early_stop],
         verbose=1
     )
-    
-    grid_search.fit(X_train, y_train)
-    
-    best_model = grid_search.best_estimator_
-    print(f"\nBest Hyperparameters Found: {grid_search.best_params_}")
 
-    preds = best_model.predict(X_test)
+    # Predictions on test set
+    preds = model.predict(X_test).flatten()
 
-    # Calculate evaluation metrics for tuned model
+    # Calculate evaluation metrics
     metrics = {
         "mae": mean_absolute_error(y_test, preds),
         "rmse": mean_squared_error(y_test, preds) ** 0.5,
         "r2": r2_score(y_test, preds),
     }
 
-    print("\nTuned Random Forest Evaluation Metrics:")
+    print("\nDeep Learning Model Evaluation Metrics:")
     for metric_name, value in metrics.items():
         print(f"  {metric_name.upper()}: {value:.4f}")
 
-    return best_model, metrics
+    return model, metrics
 
 
 if __name__ == "__main__":
@@ -95,22 +101,22 @@ if __name__ == "__main__":
     # Preprocess and split the dataset
     X_train, X_test, y_train, y_test = prepare_training_data(df)
 
-    # Tune and evaluate Random Forest model
-    model, metrics = tune_random_forest(X_train, X_test, y_train, y_test)
+    # Train and evaluate Deep Learning model
+    model, metrics = train_deep_learning_model(X_train, X_test, y_train, y_test)
 
-    # Save tuned model locally and register it in Hopsworks Model Registry
-    print("\nSaving and registering Tuned Random Forest model to Hopsworks Model Registry...")
+    # Save locally and register in Hopsworks Model Registry
+    print("\nSaving and registering Deep Learning model to Hopsworks Model Registry...")
 
-    model_file = "karachi_aqi_random_forest_tuned.pkl"
-    joblib.dump(model, model_file)
+    model_file = "karachi_aqi_dl_model.h5"
+    model.save(model_file)
 
     mr = project.get_model_registry()
 
     aqi_model = mr.python.create_model(
         name="karachi_aqi_model",
         metrics=metrics,
-        description="Hyperparameter-tuned Random Forest Regressor for Karachi AQI prediction.",
+        description="TensorFlow Deep Learning Neural Network for Karachi AQI prediction.",
     )
 
     aqi_model.save(model_file)
-    print("Tuned Random Forest model successfully registered in Hopsworks Model Registry!")
+    print("Deep Learning model successfully registered in Hopsworks Model Registry!")

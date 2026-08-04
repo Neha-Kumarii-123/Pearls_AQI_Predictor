@@ -3,10 +3,10 @@ import joblib
 import pandas as pd
 import hopsworks
 from dotenv import load_dotenv
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.ensemble import RandomForestRegressor
 
 # Load environment variables
 load_dotenv()
@@ -37,7 +37,7 @@ def prepare_training_data(df):
         X, y, test_size=0.2, random_state=42
     )
 
-    # Standardize feature scales
+    # Standardize feature scales (Very important for Ridge Regression)
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
@@ -45,47 +45,28 @@ def prepare_training_data(df):
     return X_train_scaled, X_test_scaled, y_train, y_test
 
 
-def tune_random_forest(X_train, X_test, y_train, y_test):
-    """Performs hyperparameter tuning for Random Forest using GridSearchCV."""
-    print("\nStarting Hyperparameter Tuning for Random Forest (GridSearchCV)...")
+def train_ridge_regression(X_train, X_test, y_train, y_test):
+    """Trains a Ridge Regression model and evaluates its performance."""
+    print("\nTraining Ridge Regression Model...")
     
-    base_model = RandomForestRegressor(random_state=42)
-    
-    # Defining parameter grid to search for best combination
-    param_grid = {
-        'n_estimators': [100, 200],
-        'max_depth': [15, 25, None],
-        'min_samples_split': [2, 5]
-    }
+    # Initialize Ridge model with an alpha (regularization strength)
+    model = Ridge(alpha=1.0, random_state=42)
+    model.fit(X_train, y_train)
 
-    grid_search = GridSearchCV(
-        estimator=base_model,
-        param_grid=param_grid,
-        cv=3,
-        scoring='r2',
-        n_jobs=-1,
-        verbose=1
-    )
-    
-    grid_search.fit(X_train, y_train)
-    
-    best_model = grid_search.best_estimator_
-    print(f"\nBest Hyperparameters Found: {grid_search.best_params_}")
+    preds = model.predict(X_test)
 
-    preds = best_model.predict(X_test)
-
-    # Calculate evaluation metrics for tuned model
+    # Calculate evaluation metrics
     metrics = {
         "mae": mean_absolute_error(y_test, preds),
         "rmse": mean_squared_error(y_test, preds) ** 0.5,
         "r2": r2_score(y_test, preds),
     }
 
-    print("\nTuned Random Forest Evaluation Metrics:")
+    print("\nRidge Regression Evaluation Metrics:")
     for metric_name, value in metrics.items():
         print(f"  {metric_name.upper()}: {value:.4f}")
 
-    return best_model, metrics
+    return model, metrics
 
 
 if __name__ == "__main__":
@@ -95,13 +76,13 @@ if __name__ == "__main__":
     # Preprocess and split the dataset
     X_train, X_test, y_train, y_test = prepare_training_data(df)
 
-    # Tune and evaluate Random Forest model
-    model, metrics = tune_random_forest(X_train, X_test, y_train, y_test)
+    # Train and evaluate Ridge Regression model
+    model, metrics = train_ridge_regression(X_train, X_test, y_train, y_test)
 
-    # Save tuned model locally and register it in Hopsworks Model Registry
-    print("\nSaving and registering Tuned Random Forest model to Hopsworks Model Registry...")
+    # Save locally and register in Hopsworks Model Registry (following the same pattern)
+    print("\nSaving and registering Ridge Regression model to Hopsworks Model Registry...")
 
-    model_file = "karachi_aqi_random_forest_tuned.pkl"
+    model_file = "karachi_aqi_ridge.pkl"
     joblib.dump(model, model_file)
 
     mr = project.get_model_registry()
@@ -109,8 +90,8 @@ if __name__ == "__main__":
     aqi_model = mr.python.create_model(
         name="karachi_aqi_model",
         metrics=metrics,
-        description="Hyperparameter-tuned Random Forest Regressor for Karachi AQI prediction.",
+        description="Ridge Regression model for Karachi AQI prediction.",
     )
 
     aqi_model.save(model_file)
-    print("Tuned Random Forest model successfully registered in Hopsworks Model Registry!")
+    print("Ridge Regression model successfully registered in Hopsworks Model Registry!")
