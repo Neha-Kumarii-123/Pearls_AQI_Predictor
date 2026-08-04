@@ -7,3 +7,7 @@ venv/
 # Python Cache files
 __pycache__/
 *.pyc
+
+*.pkl
+*.h5
+*.keras
