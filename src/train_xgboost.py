@@ -18,7 +18,7 @@ def fetch_historical_data():
     fs = project.get_feature_store()
 
     print("Fetching historical features from Feature Group 'karachi_aqi_features' v2...")
-    fg = fs.get_feature_group(name="karachi_aqi_features", version=2)
+    fg = fs.get_feature_group(name="karachi_aqi_features", version=4)
     df = fg.read()
     return project, df
 

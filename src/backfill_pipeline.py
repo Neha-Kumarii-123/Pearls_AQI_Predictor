@@ -22,7 +22,7 @@ def calculate_humidex(temp_c, humidity):
     humidex = temp_c + (5/9) * (e - 10)
     return humidex
 
-def fetch_historical_data(latitude=24.8607, longitude=67.0011, start_date="2024-08-01", end_date="2026-07-25"):
+def fetch_historical_data(latitude=24.8607, longitude=67.0011, start_date="2021-08-01", end_date="2026-08-01"):
     """
     Fetches hourly historical Air Quality and Weather data for Karachi from Open-Meteo.
     """
@@ -144,14 +144,14 @@ def upload_to_hopsworks(dataframe):
     fs = project.get_feature_store()
     
     # Get or create Feature Group 
-    print(" Accessing/Creating Feature Group: karachi_aqi_features (v2)...")
+    print(" Accessing/Creating Feature Group: karachi_aqi_features (v3)...")
     feature_group = fs.get_or_create_feature_group(
         name="karachi_aqi_features",
-        version=2,
+        version=3,
         primary_key=["city", "timestamp"],
         event_time="timestamp",
         description="Live weather telemetry & Canadian Humidex domain features for AQI prediction",
-        online_enabled=False
+        online_enabled=True
     )
     
     # Batch insert historical data using dataframe parameter safely
@@ -166,7 +166,7 @@ def upload_to_hopsworks(dataframe):
 
 if __name__ == "__main__":
     # Fetch 2 years of historical data for Karachi (Aug 2024 to July 2026)
-    df_raw = fetch_historical_data(start_date="2024-08-01", end_date="2026-07-25")
+    df_raw = fetch_historical_data(start_date="2021-08-01", end_date="2026-08-01")
     
     # Apply Feature Engineering
     df_processed = process_features(df_raw)
