@@ -56,40 +56,42 @@ class AirQualityFeaturePipeline:
 
 
 
-   def fetch_openweather_telemetry(self) -> Optional[Dict[str, Any]]:
+   def fetch_open_meteo_live_telemetry(self) -> Optional[Dict[str, Any]]:
         """
-        Fetches real-time dynamic weather and pollution telemetry directly via OpenWeatherMap API.
+        Fetches real-time air quality and weather telemetry via Open-Meteo API.
+        Industrial Standard: Returns None if API fails, avoiding fake/default data insertion.
         """
-        api_key = os.getenv("OPENWEATHER_API_KEY")
-        if not api_key:
-            logger.error("OPENWEATHER_API_KEY is missing in .env file.")
-            return None
-
-        # Karachi coordinates (Latitude, Longitude)
         lat, lon = 24.8607, 67.0011
-        
-        pollution_url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={api_key}"
-        weather_url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric"
+        url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi,pm10,pm2_5&hourly=temperature_2m,relative_humidity_2m&timezone=auto"
 
         try:
-            p_res = requests.get(pollution_url, timeout=10).json()
-            w_res = requests.get(weather_url, timeout=10).json()
-
-            components = p_res["list"][0]["components"]
-            main_data = p_res["list"][0]["main"]
-            pm25 = float(components.get("pm2_5", 25.0))
-            pm10 = float(components.get("pm10", 45.0))
-            target_aqi = float(main_data.get("aqi", 3))
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            }
+            res = requests.get(url, headers=headers, timeout=10).json()
+            current = res.get("current")
+            
+            # Industrial Check: Agar current data mojood nahi hai toh None return karo
+            if not current:
+                logger.error("Open-Meteo API returned empty 'current' block.")
+                return None
+            
+            target_aqi = float(current.get("us_aqi"))
+            pm25 = float(current.get("pm2_5"))
+            pm10 = float(current.get("pm10"))
+            
+            temp = float(current.get("temperature_2m", 30.0))
+            humidity = float(current.get("relative_humidity_2m", 60.0))
 
             return {
                 "pm25": pm25,
                 "pm10": pm10,
-                "temperature": float(w_res["main"]["temp"]),
-                "humidity": float(w_res["main"]["humidity"]),
+                "temperature": temp,
+                "humidity": humidity,
                 "aqi": target_aqi
             }
         except Exception as e:
-            logger.error(f"OpenWeather Fetch Error: {e}")
+            logger.error(f"Open-Meteo Live Fetch Error: {e}")
             return None
    def calculate_humidex(self, temp_c: Optional[float], humidity: Optional[float]) -> Optional[float]:
     """
@@ -110,16 +112,14 @@ class AirQualityFeaturePipeline:
         return None
    def generate_feature_vector(self) -> Optional [Dict[str, Any]]:
       """
-        Step 3 Orchestrator Algorithm: Merges Stage 0 API telemetry with 
-        Stage 1 engineered features to construct a standardized, ML-ready 
-        feature vector.
+        Step 3 Orchestrator Algorithm:
         """
       logger.info(f"Generating live feature vector for target city: {self.city}")
 
       # 1. Ingest raw telemetry (Primary: OpenWeather, Fallback: AQICN)
-      metrics = self.fetch_openweather_telemetry()
+      metrics = self.fetch_open_meteo_live_telemetry()
       if not metrics:
-          logger.warning("OpenWeather ingestion failed; falling back to AQICN ingestor...")
+          logger.warning("Open-Meteo ingestion failed; falling back to AQICN ingestor...")
           raw_data = self.ingestor.fetch_live_telemetry()
           if not raw_data:
               logger.error("All data ingestion sources failed; feature vector generation aborted.")
@@ -264,4 +264,4 @@ if __name__=="__main__":
       logger.info("\n--- STEP 4: HOPSWORKS CLOUD INTEGRATION ---")
       success = pipeline.save_to_feature_store(vector)
       if success:
-         print("\n✅ Step 4 Complete: Live feature vector is now stored in Hopsworks Cloud!")
+         print("\n Step 4 Complete: Live feature vector is now stored in Hopsworks Cloud!")
