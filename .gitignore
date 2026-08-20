@@ -1,0 +1,13 @@
+# Virtual Environment
+venv/
+
+# Environment Variables / Secret Tokens
+.env
+
+# Python Cache files
+__pycache__/
+*.pyc
+
+*.pkl
+*.h5
+*.keras
