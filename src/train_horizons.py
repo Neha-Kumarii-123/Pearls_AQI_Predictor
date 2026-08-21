@@ -39,13 +39,18 @@ def main():
 
     # Target shift for Day +1 prediction
     df['target_day1'] = df[target_col].shift(-24)
+    df['target_day2'] = df[target_col].shift(-48)
     eval_df = df.dropna().copy()
-    drop_cols = ['city', 'timestamp', target_col, 'target_day1']
+    drop_cols = ['city', 'timestamp', target_col, 'target_day1','target_day2']
     X_clean = eval_df.drop(columns=[col for col in drop_cols if col in eval_df.columns], errors='ignore')
+    print("Actual XGBoost input features:", len(X_clean.columns))
     y_d1 = eval_df['target_day1']
+    y_d2 = eval_df['target_day2']
     
     X_train, X_test, y_train, y_test = train_test_split(X_clean, y_d1, test_size=0.2, shuffle=False)
-    
+    X_train_d2, X_test_d2, y_train_d2, y_test_d2 = train_test_split(
+        X_clean, y_d2, test_size=0.2, shuffle=False
+    )
     print("--- Training Optimized XGBoost Model for Day +1 ---")
     
     # Tuning XGBoost for better generalization
@@ -85,31 +90,68 @@ def main():
     print(f"  - RMSE: {base_rmse:.4f}")
     print(f"  - R²  : {base_r2:.4f}")
 
-    # --- Save Day +1 XGBoost Model Locally ---
-    model_file = "karachi_aqi_day1_xgboost.pkl"
-    joblib.dump(xgb_model, model_file)
+    # # --- Save Day +1 XGBoost Model Locally ---
+    # model_file = "karachi_aqi_day1_xgboost.pkl"
+    # joblib.dump(xgb_model, model_file)
 
-    print(f"\nModel saved locally as: {model_file}")
+    # print(f"\nModel saved locally as: {model_file}")
 
-    # --- Register Day +1 Model in Hopsworks Model Registry ---
-    print("\nRegistering Day +1 XGBoost model in Hopsworks Model Registry...")
+    # # --- Register Day +1 Model in Hopsworks Model Registry ---
+    # print("\nRegistering Day +1 XGBoost model in Hopsworks Model Registry...")
 
-    mr = project.get_model_registry()
+    # mr = project.get_model_registry()
 
-    day1_model = mr.python.create_model(
-        name="karachi_aqi_day1_xgboost",
-        metrics={
-            "mae": mae,
-            "rmse": rmse,
-            "r2": r2
-        },
-        description="Optimized XGBoost model for Karachi AQI Day +1 (24-hour ahead) prediction."
+    # day1_model = mr.python.create_model(
+    #     name="karachi_aqi_day1_xgboost",
+    #     metrics={
+    #         "mae": mae,
+    #         "rmse": rmse,
+    #         "r2": r2
+    #     },
+    #     description="Optimized XGBoost model for Karachi AQI Day +1 (24-hour ahead) prediction."
+    # )
+
+    # day1_model.save(model_file)
+
+    # print("Day +1 XGBoost model successfully registered in Hopsworks Model Registry!")
+
+        # --- Train Separate XGBoost Model for Day +2 ---
+    print("\n--- Training Optimized XGBoost Model for Day +2 ---")
+
+    xgb_model_d2 = xgb.XGBRegressor(
+        n_estimators=300,
+        learning_rate=0.03,
+        max_depth=5,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_alpha=1.0,
+        reg_lambda=1.0,
+        n_jobs=-1,
+        random_state=42
     )
 
-    day1_model.save(model_file)
+    xgb_model_d2.fit(X_train_d2, y_train_d2)
+    preds_d2 = xgb_model_d2.predict(X_test_d2)
 
-    print("Day +1 XGBoost model successfully registered in Hopsworks Model Registry!")
+    mae_d2 = mean_absolute_error(y_test_d2, preds_d2)
+    rmse_d2 = np.sqrt(mean_squared_error(y_test_d2, preds_d2))
+    r2_d2 = r2_score(y_test_d2, preds_d2)
 
+    print(f"\n📊 [Day +2 Horizon - Optimized XGBoost]")
+    print(f"  - MAE : {mae_d2:.4f}")
+    print(f"  - RMSE: {rmse_d2:.4f}")
+    print(f"  - R²  : {r2_d2:.4f}")
 
+    # --- Day +2 Persistence Baseline ---
+    baseline_preds_d2 = eval_df.loc[X_test_d2.index, target_col]
+
+    base_mae_d2 = mean_absolute_error(y_test_d2, baseline_preds_d2)
+    base_rmse_d2 = np.sqrt(mean_squared_error(y_test_d2, baseline_preds_d2))
+    base_r2_d2 = r2_score(y_test_d2, baseline_preds_d2)
+
+    print(f"\n📊 [Day +2 Persistence Baseline Model]")
+    print(f"  - MAE : {base_mae_d2:.4f}")
+    print(f"  - RMSE: {base_rmse_d2:.4f}")
+    print(f"  - R²  : {base_r2_d2:.4f}")
 if __name__ == "__main__":
     main()
