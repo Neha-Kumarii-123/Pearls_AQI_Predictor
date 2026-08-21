@@ -147,7 +147,7 @@ def upload_to_hopsworks(dataframe):
     print(" Accessing/Creating Feature Group: karachi_aqi_features (v3)...")
     feature_group = fs.get_or_create_feature_group(
         name="karachi_aqi_features",
-        version=3,
+        version=4,
         primary_key=["city", "timestamp"],
         event_time="timestamp",
         description="Live weather telemetry & Canadian Humidex domain features for AQI prediction",

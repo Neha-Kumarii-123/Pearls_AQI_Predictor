@@ -14,8 +14,8 @@ def fetch_data_for_eda():
     project = hopsworks.login(api_key_value=os.getenv("HOPSWORKS_API_KEY"))
     fs = project.get_feature_store()
 
-    print("Fetching dataset from Feature Group 'karachi_aqi_features' v2...")
-    fg = fs.get_feature_group(name="karachi_aqi_features", version=2)
+    print("Fetching dataset from Feature Group 'karachi_aqi_features' v4...")
+    fg = fs.get_feature_group(name="karachi_aqi_features", version=4)
     df = fg.read()
     return df
 

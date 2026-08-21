@@ -15,7 +15,7 @@ def main():
     fs = project.get_feature_store()
     
     print("--- Fetching Feature Group ---")
-    feature_group = fs.get_feature_group(name="karachi_aqi_features", version=3)
+    feature_group = fs.get_feature_group(name="karachi_aqi_features", version=4)
     df = feature_group.read()
     
     # Sort and create features
@@ -72,5 +72,17 @@ def main():
     print(f"  - RMSE: {rmse:.4f}")
     print(f"  - R²  : {r2:.4f}")
 
+        # --- 2. Persistence Baseline Metrics ---
+    # Persistence: use current AQI to predict AQI 24 hours ahead
+    baseline_preds = eval_df.loc[X_test.index, target_col]
+
+    base_mae = mean_absolute_error(y_test, baseline_preds)
+    base_rmse = np.sqrt(mean_squared_error(y_test, baseline_preds))
+    base_r2 = r2_score(y_test, baseline_preds)
+
+    print(f"\n📊 [Persistence Baseline Model]")
+    print(f"  - MAE : {base_mae:.4f}")
+    print(f"  - RMSE: {base_rmse:.4f}")
+    print(f"  - R²  : {base_r2:.4f}")
 if __name__ == "__main__":
     main()

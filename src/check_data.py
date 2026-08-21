@@ -16,14 +16,32 @@ project = hopsworks.login(
 )
 
 feature_store = project.get_feature_store()
-aqi_fg = feature_store.get_feature_group("karachi_aqi_features", version=2)
-df = aqi_fg.read()
 
-# Timestamp ko readable date-time mein convert karein
-df['readable_time'] = pd.to_datetime(df['timestamp'], unit='ms')
+# --- STEP 2: STEP-BY-STEP SAFE DEBUGGING ---
+try:
+    print("\n[Step A] Testing metadata fetch for all feature groups...")
+    fg_metadata = feature_store.get_feature_groups()
+    print(f"-> Success! Found {len(fg_metadata)} feature groups in this store.")
+    for fg in fg_metadata:
+        print(f"   - Name: {fg.name}, Version: {fg.version}")
+except Exception as e:
+    print(f"-> Failed at metadata fetch: {e}")
 
-# Latest rows ko sort karke readable time ke sath print karein
-df_sorted = df.sort_values(by="timestamp", ascending=False)
+try:
+    print("\n[Step B] Attempting to retrieve 'karachi_aqi_features' version 1...")
+    aqi_fg = feature_store.get_feature_group("karachi_aqi_features", version=1)
+    print("-> Success! Feature Group object retrieved.")
+    
+    print("\n[Step C] Reading data from Feature Group...")
+    df = aqi_fg.select_all().read(read_options={"use_arrow_flight": False})
+    print(f"-> Success! Data loaded with shape: {df.shape}")
 
-print("\n--- LATEST ROWS WITH EXACT TIMESTAMPS ---")
-print(df_sorted[['timestamp', 'readable_time', 'pm25', 'temperature', 'target_aqi']].head(10))
+    # Timestamp ko readable date-time mein convert karein
+    df['readable_time'] = pd.to_datetime(df['timestamp'], unit='ms')
+    df_sorted = df.sort_values(by="timestamp", ascending=False)
+
+    print("\n--- LATEST ROWS WITH EXACT TIMESTAMPS ---")
+    print(df_sorted[['timestamp', 'readable_time', 'pm25', 'temperature', 'target_aqi']].head(10))
+
+except Exception as e:
+    print(f"-> Failed during Step B or C: {e}")
