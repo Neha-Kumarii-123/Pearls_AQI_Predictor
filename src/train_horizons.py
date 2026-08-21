@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import hopsworks
 import pandas as pd
 import numpy as np
+import joblib
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import xgboost as xgb
@@ -71,8 +72,7 @@ def main():
     print(f"  - MAE : {mae:.4f}")
     print(f"  - RMSE: {rmse:.4f}")
     print(f"  - R²  : {r2:.4f}")
-
-        # --- 2. Persistence Baseline Metrics ---
+    # --- 2. Persistence Baseline Metrics ---
     # Persistence: use current AQI to predict AQI 24 hours ahead
     baseline_preds = eval_df.loc[X_test.index, target_col]
 
@@ -84,5 +84,32 @@ def main():
     print(f"  - MAE : {base_mae:.4f}")
     print(f"  - RMSE: {base_rmse:.4f}")
     print(f"  - R²  : {base_r2:.4f}")
+
+    # --- Save Day +1 XGBoost Model Locally ---
+    model_file = "karachi_aqi_day1_xgboost.pkl"
+    joblib.dump(xgb_model, model_file)
+
+    print(f"\nModel saved locally as: {model_file}")
+
+    # --- Register Day +1 Model in Hopsworks Model Registry ---
+    print("\nRegistering Day +1 XGBoost model in Hopsworks Model Registry...")
+
+    mr = project.get_model_registry()
+
+    day1_model = mr.python.create_model(
+        name="karachi_aqi_day1_xgboost",
+        metrics={
+            "mae": mae,
+            "rmse": rmse,
+            "r2": r2
+        },
+        description="Optimized XGBoost model for Karachi AQI Day +1 (24-hour ahead) prediction."
+    )
+
+    day1_model.save(model_file)
+
+    print("Day +1 XGBoost model successfully registered in Hopsworks Model Registry!")
+
+
 if __name__ == "__main__":
     main()
