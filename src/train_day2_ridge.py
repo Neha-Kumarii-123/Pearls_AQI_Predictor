@@ -219,15 +219,12 @@ def main():
         X_train,
         y_train
     )
-
-    # ---------------------------------------------------------
-    # Predictions
-    # ---------------------------------------------------------
-
-    preds = ridge_model.predict(X_test)
-
         # ---------------------------------------------------------
-    # Feature coefficient diagnostic
+    # Final Feature Selection
+    # ---------------------------------------------------------
+    # Based on our experiment, the top 60 Ridge-ranked features
+    # performed best on the current validation split.
+    # We now use those 60 features for the final Day +2 model.
     # ---------------------------------------------------------
 
     feature_coefficients = pd.DataFrame({
@@ -244,13 +241,41 @@ def main():
         ascending=False
     )
 
-    print("\n--- Top 20 Ridge Features ---")
-    print(
-        feature_coefficients[
-            ["feature", "coefficient"]
-        ].head(20).to_string(index=False)
+    selected_features = (
+        feature_coefficients
+        .head(60)["feature"]
+        .tolist()
     )
 
+    print("\n--- Final Feature Selection ---")
+    print(f"Selected features: {len(selected_features)}")
+
+    X_train_selected = X_train[selected_features]
+    X_test_selected = X_test[selected_features]
+
+    final_model = Pipeline([
+        (
+            "scaler",
+            StandardScaler()
+        ),
+        (
+            "ridge",
+            Ridge(alpha=1500.0)
+        )
+    ])
+
+    print("\n--- Training Final 60-Feature Ridge Model for Day +2 ---")
+
+    final_model.fit(
+        X_train_selected,
+        y_train
+    )
+
+    preds = final_model.predict(
+        X_test_selected
+    )
+
+   
     # ---------------------------------------------------------
     # Metrics
     # ---------------------------------------------------------
