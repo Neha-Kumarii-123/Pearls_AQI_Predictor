@@ -31,19 +31,50 @@ def main():
 
     df = feature_group.read()
 
-    # ---------------------------------------------------------
+        # ---------------------------------------------------------
     # Sort chronologically
     # ---------------------------------------------------------
 
     if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
         df = df.sort_values("timestamp").reset_index(drop=True)
+
+        # ---------------------------------------------------------
+        # Time-based features
+        # ---------------------------------------------------------
+
+        df["hour"] = df["timestamp"].dt.hour
+        df["day_of_week"] = df["timestamp"].dt.dayofweek
+
+        
+
+        
+        
 
     target_col = (
         "target_aqi"
         if "target_aqi" in df.columns
         else "target"
     )
+    if "pm25" in df.columns and "humidity" in df.columns:
+        df["pm25_humidity_interaction"] = (
+            df["pm25"] * df["humidity"]
+        )
+    
+    if "pm10" in df.columns and "humidity" in df.columns:
+        df["pm10_humidity_interaction"] = (
+            df["pm10"] * df["humidity"]
+        )
 
+    if "pm10" in df.columns and "wind_speed" in df.columns:
+        df["pm10_wind_interaction"] = (
+            df["pm10"] * df["wind_speed"]
+        )
+
+    if "wind_speed" in df.columns and "wind_direction" in df.columns:
+        df["wind_speed_direction"] = (
+            df["wind_speed"] * df["wind_direction"]
+        )
     # ---------------------------------------------------------
     # Feature Engineering
     # ---------------------------------------------------------
@@ -61,23 +92,64 @@ def main():
 
         if col in df.columns:
 
-            for lag in [1, 2, 3, 24, 48]:
+            # Lag features
+            for lag in [1, 2, 3, 24, 48, 72, 168]:
                 df[f"{col}_lag_{lag}"] = df[col].shift(lag)
 
+            # Rolling mean — recent 6 hours
+            df[f"{col}_rolling_mean_6"] = (
+                df[col]
+                .shift(1)
+                .rolling(window=6)
+                .mean()
+            )
+
+            # Rolling mean — recent 12 hours
+            df[f"{col}_rolling_mean_12"] = (
+                df[col]
+                .shift(1)
+                .rolling(window=12)
+                .mean()
+            )
+
+            # Rolling mean — recent 24 hours
             df[f"{col}_rolling_mean_24"] = (
                 df[col]
                 .shift(1)
                 .rolling(window=24)
                 .mean()
             )
+            # Rolling mean — recent 48 hours
+            df[f"{col}_rolling_mean_48"] = (
+                df[col]
+                .shift(1)
+                .rolling(window=48)
+                .mean()
+            )
+              # Rolling mean — recent 72 hours
+            df[f"{col}_rolling_mean_72"] = (
+                df[col]
+                .shift(1)
+                .rolling(window=72)
+                .mean()
+            )
 
+            # Rolling mean — recent 168 hours
+            df[f"{col}_rolling_mean_168"] = (
+                df[col]
+                .shift(1)
+                .rolling(window=168)
+                .mean()
+            )
+            # Rolling volatility — recent 24 hours
             df[f"{col}_rolling_std_24"] = (
                 df[col]
                 .shift(1)
                 .rolling(window=24)
                 .std()
             )
-
+    
+    
     # ---------------------------------------------------------
     # Day +2 target
     # ---------------------------------------------------------
@@ -137,7 +209,7 @@ def main():
         ),
         (
             "ridge",
-            Ridge(alpha=10.0)
+            Ridge(alpha=1500.0)
         )
     ])
 
@@ -153,6 +225,31 @@ def main():
     # ---------------------------------------------------------
 
     preds = ridge_model.predict(X_test)
+
+        # ---------------------------------------------------------
+    # Feature coefficient diagnostic
+    # ---------------------------------------------------------
+
+    feature_coefficients = pd.DataFrame({
+        "feature": X_train.columns,
+        "coefficient": ridge_model.named_steps["ridge"].coef_
+    })
+
+    feature_coefficients["abs_coefficient"] = (
+        feature_coefficients["coefficient"].abs()
+    )
+
+    feature_coefficients = feature_coefficients.sort_values(
+        "abs_coefficient",
+        ascending=False
+    )
+
+    print("\n--- Top 20 Ridge Features ---")
+    print(
+        feature_coefficients[
+            ["feature", "coefficient"]
+        ].head(20).to_string(index=False)
+    )
 
     # ---------------------------------------------------------
     # Metrics
@@ -256,52 +353,52 @@ def main():
         "BETTER" if r2 > base_r2 else "WORSE"
     )
 
-    # ---------------------------------------------------------
-    # Save model locally
-    # ---------------------------------------------------------
+    # # ---------------------------------------------------------
+    # # Save model locally
+    # # ---------------------------------------------------------
 
-    model_file = "karachi_aqi_day2_ridge.pkl"
+    # model_file = "karachi_aqi_day2_ridge.pkl"
 
-    joblib.dump(
-        ridge_model,
-        model_file
-    )
+    # joblib.dump(
+    #     ridge_model,
+    #     model_file
+    # )
 
-    print(
-        f"\nModel saved locally as: {model_file}"
-    )
+    # print(
+    #     f"\nModel saved locally as: {model_file}"
+    # )
 
-    # ---------------------------------------------------------
-    # Register final Day +2 model
-    # ---------------------------------------------------------
+    # # ---------------------------------------------------------
+    # # Register final Day +2 model
+    # # ---------------------------------------------------------
 
-    print(
-        "\n--- Registering Final Day +2 Ridge Model ---"
-    )
+    # print(
+    #     "\n--- Registering Final Day +2 Ridge Model ---"
+    # )
 
-    mr = project.get_model_registry()
+    # mr = project.get_model_registry()
 
-    day2_model = mr.python.create_model(
-        name="karachi_aqi_day2_ridge",
-        metrics={
-            "mae": float(mae),
-            "rmse": float(rmse),
-            "r2": float(r2)
-        },
-        description=(
-            "Final Ridge Regression model for "
-            "Karachi AQI Day +2 (48-hour ahead) prediction."
-        )
-    )
+    # day2_model = mr.python.create_model(
+    #     name="karachi_aqi_day2_ridge",
+    #     metrics={
+    #         "mae": float(mae),
+    #         "rmse": float(rmse),
+    #         "r2": float(r2)
+    #     },
+    #     description=(
+    #         "Final Ridge Regression model for "
+    #         "Karachi AQI Day +2 (48-hour ahead) prediction."
+    #     )
+    # )
 
-    day2_model.save(
-        model_file
-    )
+    # day2_model.save(
+    #     model_file
+    # )
 
-    print(
-        "\n✅ Final Day +2 Ridge model successfully "
-        "registered in Hopsworks Model Registry!"
-    )
+    # print(
+    #     "\nFinal Day +2 Ridge model successfully "
+    #     "registered in Hopsworks Model Registry!"
+    # )
 
 
 if __name__ == "__main__":
