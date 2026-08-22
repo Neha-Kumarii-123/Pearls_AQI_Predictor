@@ -36,7 +36,7 @@ def main():
     # ---------------------------------------------------------
 
     if "timestamp" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         df = df.sort_values("timestamp").reset_index(drop=True)
 
         # ---------------------------------------------------------
