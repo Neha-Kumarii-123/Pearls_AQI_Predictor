@@ -165,7 +165,7 @@ def upload_to_hopsworks(dataframe):
     print(" Historical backfill insertion completed successfully!")
 
 if __name__ == "__main__":
-    # Fetch 2 years of historical data for Karachi (Aug 2024 to July 2026)
+    # Fetch 5 years of historical data for Karachi (Aug 2024 to July 2026)
     df_raw = fetch_historical_data(start_date="2021-08-01", end_date="2026-08-01")
     
     # Apply Feature Engineering

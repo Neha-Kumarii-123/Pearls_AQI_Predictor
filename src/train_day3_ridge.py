@@ -31,13 +31,19 @@ def main():
 
     df = feature_group.read()
 
-        # ---------------------------------------------------------
+    # ---------------------------------------------------------
     # Sort chronologically
     # ---------------------------------------------------------
 
     if "timestamp" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        df = df.sort_values("timestamp").reset_index(drop=True)
+        df["timestamp"] = pd.to_datetime(
+            df["timestamp"],
+            unit="ms"
+        )
+
+        df = df.sort_values(
+            "timestamp"
+        ).reset_index(drop=True)
 
         # ---------------------------------------------------------
         # Time-based features
@@ -46,21 +52,25 @@ def main():
         df["hour"] = df["timestamp"].dt.hour
         df["day_of_week"] = df["timestamp"].dt.dayofweek
 
-        
-
-        
-        
+    # ---------------------------------------------------------
+    # Target column
+    # ---------------------------------------------------------
 
     target_col = (
         "target_aqi"
         if "target_aqi" in df.columns
         else "target"
     )
+
+    # ---------------------------------------------------------
+    # Interaction Features
+    # ---------------------------------------------------------
+
     if "pm25" in df.columns and "humidity" in df.columns:
         df["pm25_humidity_interaction"] = (
             df["pm25"] * df["humidity"]
         )
-    
+
     if "pm10" in df.columns and "humidity" in df.columns:
         df["pm10_humidity_interaction"] = (
             df["pm10"] * df["humidity"]
@@ -75,6 +85,7 @@ def main():
         df["wind_speed_direction"] = (
             df["wind_speed"] * df["wind_direction"]
         )
+
     # ---------------------------------------------------------
     # Feature Engineering
     # ---------------------------------------------------------
@@ -94,7 +105,9 @@ def main():
 
             # Lag features
             for lag in [1, 2, 3, 24, 48, 72, 168]:
-                df[f"{col}_lag_{lag}"] = df[col].shift(lag)
+                df[f"{col}_lag_{lag}"] = (
+                    df[col].shift(lag)
+                )
 
             # Rolling mean — recent 6 hours
             df[f"{col}_rolling_mean_6"] = (
@@ -119,6 +132,7 @@ def main():
                 .rolling(window=24)
                 .mean()
             )
+
             # Rolling mean — recent 48 hours
             df[f"{col}_rolling_mean_48"] = (
                 df[col]
@@ -126,7 +140,8 @@ def main():
                 .rolling(window=48)
                 .mean()
             )
-              # Rolling mean — recent 72 hours
+
+            # Rolling mean — recent 72 hours
             df[f"{col}_rolling_mean_72"] = (
                 df[col]
                 .shift(1)
@@ -141,6 +156,7 @@ def main():
                 .rolling(window=168)
                 .mean()
             )
+
             # Rolling volatility — recent 24 hours
             df[f"{col}_rolling_std_24"] = (
                 df[col]
@@ -148,13 +164,14 @@ def main():
                 .rolling(window=24)
                 .std()
             )
-    
-    
+
     # ---------------------------------------------------------
-    # Day +2 target
+    # Day +3 Target
     # ---------------------------------------------------------
 
-    df["target_day2"] = df[target_col].shift(-48)
+    df["target_day3"] = (
+        df[target_col].shift(-72)
+    )
 
     eval_df = df.dropna().copy()
 
@@ -167,7 +184,8 @@ def main():
         "timestamp",
         target_col,
         "target_day1",
-        "target_day2"
+        "target_day2",
+        "target_day3"
     ]
 
     X_clean = eval_df.drop(
@@ -178,10 +196,11 @@ def main():
         errors="ignore"
     )
 
-    y = eval_df["target_day2"]
+    y = eval_df["target_day3"]
 
     print(
-        f"Actual Ridge input features: {len(X_clean.columns)}"
+        f"Actual Ridge input features: "
+        f"{len(X_clean.columns)}"
     )
 
     # ---------------------------------------------------------
@@ -196,10 +215,7 @@ def main():
     )
 
     # ---------------------------------------------------------
-    # Ridge Pipeline
-    #
-    # Scaling is important for Ridge because it is
-    # sensitive to feature magnitudes.
+    # Initial Ridge Model
     # ---------------------------------------------------------
 
     ridge_model = Pipeline([
@@ -213,32 +229,36 @@ def main():
         )
     ])
 
-    print("\n--- Training Final Ridge Model for Day +2 ---")
+    print(
+        "\n--- Training Initial Ridge Model "
+        "for Day +3 ---"
+    )
 
     ridge_model.fit(
         X_train,
         y_train
     )
-        # ---------------------------------------------------------
-    # Final Feature Selection
+
     # ---------------------------------------------------------
-    # Based on our experiment, the top 60 Ridge-ranked features
-    # performed best on the current validation split.
-    # We now use those 60 features for the final Day +2 model.
+    # Feature Selection
     # ---------------------------------------------------------
 
     feature_coefficients = pd.DataFrame({
         "feature": X_train.columns,
-        "coefficient": ridge_model.named_steps["ridge"].coef_
+        "coefficient":
+            ridge_model.named_steps["ridge"].coef_
     })
 
     feature_coefficients["abs_coefficient"] = (
         feature_coefficients["coefficient"].abs()
     )
 
-    feature_coefficients = feature_coefficients.sort_values(
-        "abs_coefficient",
-        ascending=False
+    feature_coefficients = (
+        feature_coefficients
+        .sort_values(
+            "abs_coefficient",
+            ascending=False
+        )
     )
 
     selected_features = (
@@ -247,11 +267,26 @@ def main():
         .tolist()
     )
 
-    print("\n--- Final Feature Selection ---")
-    print(f"Selected features: {len(selected_features)}")
+    print(
+        "\n--- Final Feature Selection ---"
+    )
 
-    X_train_selected = X_train[selected_features]
-    X_test_selected = X_test[selected_features]
+    print(
+        f"Selected features: "
+        f"{len(selected_features)}"
+    )
+
+    X_train_selected = (
+        X_train[selected_features]
+    )
+
+    X_test_selected = (
+        X_test[selected_features]
+    )
+
+    # ---------------------------------------------------------
+    # Final Day +3 Ridge Model
+    # ---------------------------------------------------------
 
     final_model = Pipeline([
         (
@@ -264,7 +299,10 @@ def main():
         )
     ])
 
-    print("\n--- Training Final 60-Feature Ridge Model for Day +2 ---")
+    print(
+        "\n--- Training Final 60-Feature "
+        "Ridge Model for Day +3 ---"
+    )
 
     final_model.fit(
         X_train_selected,
@@ -275,7 +313,6 @@ def main():
         X_test_selected
     )
 
-   
     # ---------------------------------------------------------
     # Metrics
     # ---------------------------------------------------------
@@ -298,7 +335,7 @@ def main():
     )
 
     print(
-        "\n📊 [Final Day +2 Ridge Model]"
+        "\n📊 [Final Day +3 Ridge Model]"
     )
 
     print(
@@ -314,7 +351,7 @@ def main():
     )
 
     # ---------------------------------------------------------
-    # Persistence baseline
+    # Day +3 Persistence Baseline
     # ---------------------------------------------------------
 
     baseline_preds = eval_df.loc[
@@ -340,7 +377,7 @@ def main():
     )
 
     print(
-        "\n📊 [Day +2 Persistence Baseline]"
+        "\n📊 [Day +3 Persistence Baseline]"
     )
 
     print(
@@ -356,7 +393,7 @@ def main():
     )
 
     # ---------------------------------------------------------
-    # Final validation
+    # Final Model vs Persistence
     # ---------------------------------------------------------
 
     print(
@@ -382,59 +419,69 @@ def main():
     # # Save model locally
     # # ---------------------------------------------------------
 
-    model_file = "karachi_aqi_day2_ridge.pkl"
+    # model_file = (
+    #     "karachi_aqi_day3_ridge.pkl"
+    # )
 
-    joblib.dump(
-        final_model,
-        model_file
-    )
+    # joblib.dump(
+    #     final_model,
+    #     model_file
+    # )
 
-    print(
-        f"\nFinal model saved locally as: {model_file}"
-    )
+    # print(
+    #     f"\nFinal model saved locally as: "
+    #     f"{model_file}"
+    # )
 
-    features_file = "karachi_aqi_day2_features.pkl"
+    # # ---------------------------------------------------------
+    # # Save selected feature list
+    # # ---------------------------------------------------------
 
-    joblib.dump(
-        selected_features,
-        features_file
-    )
+    # features_file = (
+    #     "karachi_aqi_day3_features.pkl"
+    # )
 
-    print(
-        f"Selected feature list saved as: {features_file}"
-    )
+    # joblib.dump(
+    #     selected_features,
+    #     features_file
+    # )
 
-    # ---------------------------------------------------------
-    # Register final Day +2 model
-    # ---------------------------------------------------------
+    # print(
+    #     f"Selected feature list saved as: "
+    #     f"{features_file}"
+    # )
 
-    print(
-        "\n--- Registering Final Day +2 Ridge Model ---"
-    )
+    # # ---------------------------------------------------------
+    # # Register Day +3 model
+    # # ---------------------------------------------------------
 
-    mr = project.get_model_registry()
+    # print(
+    #     "\n--- Registering Final Day +3 Ridge Model ---"
+    # )
 
-    day2_model = mr.python.create_model(
-        name="karachi_aqi_day2_ridge",
-        metrics={
-            "mae": float(mae),
-            "rmse": float(rmse),
-            "r2": float(r2)
-        },
-        description=(
-            "Final Ridge Regression model for "
-            "Karachi AQI Day +2 (48-hour ahead) prediction."
-        )
-    )
+    # mr = project.get_model_registry()
 
-    day2_model.save(
-        model_file
-    )
+    # day3_model = mr.python.create_model(
+    #     name="karachi_aqi_day3_ridge",
+    #     metrics={
+    #         "mae": float(mae),
+    #         "rmse": float(rmse),
+    #         "r2": float(r2)
+    #     },
+    #     description=(
+    #         "Final Ridge Regression model for "
+    #         "Karachi AQI Day +3 (72-hour ahead) prediction."
+    #     )
+    # )
 
-    print(
-        "\nFinal Day +2 Ridge model successfully "
-        "registered in Hopsworks Model Registry!"
-    )
+    # day3_model.save(
+    #     model_file
+    # )
+
+    # print(
+    #     "\nFinal Day +3 Ridge model successfully "
+    #     "registered in Hopsworks Model Registry!"
+    # )
 
 
 if __name__ == "__main__":
