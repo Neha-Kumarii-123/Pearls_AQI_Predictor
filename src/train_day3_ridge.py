@@ -415,73 +415,74 @@ def main():
         "BETTER" if r2 > base_r2 else "WORSE"
     )
 
-    # # ---------------------------------------------------------
-    # # Save model locally
-    # # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # Save model locally
+    # ---------------------------------------------------------
 
-    # model_file = (
-    #     "karachi_aqi_day3_ridge.pkl"
-    # )
+    model_file = (
+        "karachi_aqi_day3_ridge.pkl"
+    )
 
-    # joblib.dump(
-    #     final_model,
-    #     model_file
-    # )
+    joblib.dump(
+        final_model,
+        model_file
+    )
 
-    # print(
-    #     f"\nFinal model saved locally as: "
-    #     f"{model_file}"
-    # )
+    print(
+        f"\nFinal model saved locally as: "
+        f"{model_file}"
+    )
 
-    # # ---------------------------------------------------------
-    # # Save selected feature list
-    # # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # Save selected feature list
+    # ---------------------------------------------------------
 
-    # features_file = (
-    #     "karachi_aqi_day3_features.pkl"
-    # )
+    features_file = (
+        "karachi_aqi_day3_features.pkl"
+    )
 
-    # joblib.dump(
-    #     selected_features,
-    #     features_file
-    # )
+    joblib.dump(
+        selected_features,
+        features_file
+    )
 
-    # print(
-    #     f"Selected feature list saved as: "
-    #     f"{features_file}"
-    # )
+    print(
+        f"Selected feature list saved as: "
+        f"{features_file}"
+    )
 
-    # # ---------------------------------------------------------
-    # # Register Day +3 model
-    # # ---------------------------------------------------------
+    # ---------------------------------------------------------
+    # Register Day +3 model
+    # ---------------------------------------------------------
 
-    # print(
-    #     "\n--- Registering Final Day +3 Ridge Model ---"
-    # )
+    print(
+        "\n--- Registering Final Day +3 Ridge Model ---"
+    )
 
-    # mr = project.get_model_registry()
+    mr = project.get_model_registry()
 
-    # day3_model = mr.python.create_model(
-    #     name="karachi_aqi_day3_ridge",
-    #     metrics={
-    #         "mae": float(mae),
-    #         "rmse": float(rmse),
-    #         "r2": float(r2)
-    #     },
-    #     description=(
-    #         "Final Ridge Regression model for "
-    #         "Karachi AQI Day +3 (72-hour ahead) prediction."
-    #     )
-    # )
+    day3_model = mr.python.create_model(
+        name="karachi_aqi_day3_ridge",
+        metrics={
+            "mae": float(mae),
+            "rmse": float(rmse),
+            "r2": float(r2)
+        },
+        description=(
+            "Final Ridge Regression model for Karachi AQI "
+            "Day +3 (72-hour ahead) prediction using 60 "
+            "selected features and Ridge alpha=1500."
+        )
+    )
 
-    # day3_model.save(
-    #     model_file
-    # )
+    day3_model.save(
+        model_file
+    )
 
-    # print(
-    #     "\nFinal Day +3 Ridge model successfully "
-    #     "registered in Hopsworks Model Registry!"
-    # )
+    print(
+        "\nFinal Day +3 Ridge model successfully "
+        "registered in Hopsworks Model Registry!"
+    )
 
 
 if __name__ == "__main__":
