@@ -97,11 +97,11 @@ def main():
     print(f"  - RMSE: {base_rmse:.4f}")
     print(f"  - R²  : {base_r2:.4f}")
 
-    # # --- Save Day +1 XGBoost Model Locally ---
-    # model_file = "karachi_aqi_day1_xgboost.pkl"
-    # joblib.dump(xgb_model, model_file)
+    # --- Save Day +1 XGBoost Model Locally ---
+    model_file = "karachi_aqi_day1_xgboost.pkl"
+    joblib.dump(xgb_model, model_file)
 
-    # print(f"\nModel saved locally as: {model_file}")
+    print(f"\nModel saved locally as: {model_file}")
 
     # # --- Register Day +1 Model in Hopsworks Model Registry ---
     # print("\nRegistering Day +1 XGBoost model in Hopsworks Model Registry...")
