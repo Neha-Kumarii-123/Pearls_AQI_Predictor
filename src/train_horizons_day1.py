@@ -8,6 +8,13 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import xgboost as xgb
 
+from feature_engineering import (
+    MODEL_FEATURES,
+    REQUIRED_RAW_COLUMNS,
+    build_rich_features,
+    validate_feature_frame,
+)
+
 load_dotenv()
 
 def main():
@@ -17,36 +24,39 @@ def main():
     
     print("--- Fetching Feature Group ---")
     feature_group = fs.get_feature_group(name="karachi_aqi_features", version=4)
-    df = feature_group.read()
-    
-    # Sort and create features
-    if 'timestamp' in df.columns:
-        df = df.sort_values('timestamp').reset_index(drop=True)
-        
-    target_col = 'target_aqi' if 'target_aqi' in df.columns else 'target'
-    
-    # Feature Engineering (Lags + Rolling for Target & Weather Features)
-    features_to_lag = [target_col, 'temperature', 'humidity', 'pm25', 'pm10', 'humidex']
-    
-    for col in features_to_lag:
-        if col in df.columns:
-            for lag in [1, 2, 3, 24, 48]:
-                df[f'{col}_lag_{lag}'] = df[col].shift(lag)
-            
-            # Rolling means & std to capture trends
-            df[f'{col}_rolling_mean_24'] = df[col].shift(1).rolling(window=24).mean()
-            df[f'{col}_rolling_std_24'] = df[col].shift(1).rolling(window=24).std()
+    df = feature_group.select(list(REQUIRED_RAW_COLUMNS)).read()
 
-    # Target shift for Day +1 prediction
-    df['target_day1'] = df[target_col].shift(-24)
-    eval_df = df.dropna().copy()
-    drop_cols = ['city', 'timestamp', target_col, 'target_day1']
-    X_clean = eval_df.drop(columns=[col for col in drop_cols if col in eval_df.columns], errors='ignore')
-    print("Actual XGBoost input features:", len(X_clean.columns))
-    print("Contains target_day1:", "target_day1" in X_clean.columns)
-    y_d1 = eval_df['target_day1']
-    
-    X_train, X_test, y_train, y_test = train_test_split(X_clean, y_d1, test_size=0.2, shuffle=False)
+    print("Raw Hopsworks shape:", df.shape)
+    features = build_rich_features(df)
+    validate_feature_frame(features)
+    print("Shared feature-frame shape:", features.shape)
+    print("Number of MODEL_FEATURES:", len(MODEL_FEATURES))
+
+    features["target_day1"] = features["target_aqi"].shift(-24)
+    eval_df = features.dropna(
+        subset=list(MODEL_FEATURES) + ["target_day1"]
+    ).copy()
+
+    X = eval_df[list(MODEL_FEATURES)]
+    y = eval_df["target_day1"]
+    print("Actual XGBoost input feature count:", len(X.columns))
+    print("First timestamp after feature engineering:", features["timestamp"].iloc[0])
+    print("Last timestamp after feature engineering:", features["timestamp"].iloc[-1])
+    print("Whether target_day1 is in X:", "target_day1" in X.columns)
+    print("Whether target_aqi is in X:", "target_aqi" in X.columns)
+    print("Whether X columns exactly match MODEL_FEATURES:", list(X.columns) == list(MODEL_FEATURES))
+
+    if len(MODEL_FEATURES) != 100:
+        raise RuntimeError("Expected exactly 100 MODEL_FEATURES")
+    if list(X.columns) != list(MODEL_FEATURES):
+        raise RuntimeError("X columns do not match canonical MODEL_FEATURES")
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.2,
+        shuffle=False,
+    )
     
     print("--- Training Optimized XGBoost Model for Day +1 ---")
     
@@ -76,7 +86,7 @@ def main():
     print(f"  - R²  : {r2:.4f}")
     # --- 2. Persistence Baseline Metrics ---
     # Persistence: use current AQI to predict AQI 24 hours ahead
-    baseline_preds = eval_df.loc[X_test.index, target_col]
+    baseline_preds = eval_df.loc[X_test.index, "target_aqi"]
 
     base_mae = mean_absolute_error(y_test, baseline_preds)
     base_rmse = np.sqrt(mean_squared_error(y_test, baseline_preds))

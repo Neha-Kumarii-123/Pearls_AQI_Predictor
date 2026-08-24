@@ -11,6 +11,12 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import Ridge
 from sklearn.pipeline import Pipeline
 
+from feature_engineering import (
+    MODEL_FEATURES,
+    REQUIRED_RAW_COLUMNS,
+    build_rich_features,
+    validate_feature_frame,
+)
 
 load_dotenv()
 
@@ -29,167 +35,41 @@ def main():
         version=4
     )
 
-    df = feature_group.read()
+    df = feature_group.select(list(REQUIRED_RAW_COLUMNS)).read()
 
-        # ---------------------------------------------------------
-    # Sort chronologically
-    # ---------------------------------------------------------
+    print("Raw Hopsworks shape:", df.shape)
+    features = build_rich_features(df)
+    validate_feature_frame(features)
+    print("Shared feature-frame shape:", features.shape)
+    print("Number of MODEL_FEATURES:", len(MODEL_FEATURES))
 
-    if "timestamp" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        df = df.sort_values("timestamp").reset_index(drop=True)
+    features["target_day2"] = features["target_aqi"].shift(-48)
+    eval_df = features.dropna(
+        subset=list(MODEL_FEATURES) + ["target_day2"]
+    ).copy()
 
-        # ---------------------------------------------------------
-        # Time-based features
-        # ---------------------------------------------------------
-
-        df["hour"] = df["timestamp"].dt.hour
-        df["day_of_week"] = df["timestamp"].dt.dayofweek
-
-        
-
-        
-        
-
-    target_col = (
-        "target_aqi"
-        if "target_aqi" in df.columns
-        else "target"
-    )
-    if "pm25" in df.columns and "humidity" in df.columns:
-        df["pm25_humidity_interaction"] = (
-            df["pm25"] * df["humidity"]
-        )
-    
-    if "pm10" in df.columns and "humidity" in df.columns:
-        df["pm10_humidity_interaction"] = (
-            df["pm10"] * df["humidity"]
-        )
-
-    if "pm10" in df.columns and "wind_speed" in df.columns:
-        df["pm10_wind_interaction"] = (
-            df["pm10"] * df["wind_speed"]
-        )
-
-    if "wind_speed" in df.columns and "wind_direction" in df.columns:
-        df["wind_speed_direction"] = (
-            df["wind_speed"] * df["wind_direction"]
-        )
-    # ---------------------------------------------------------
-    # Feature Engineering
-    # ---------------------------------------------------------
-
-    features_to_lag = [
-        target_col,
-        "temperature",
-        "humidity",
-        "pm25",
-        "pm10",
-        "humidex"
-    ]
-
-    for col in features_to_lag:
-
-        if col in df.columns:
-
-            # Lag features
-            for lag in [1, 2, 3, 24, 48, 72, 168]:
-                df[f"{col}_lag_{lag}"] = df[col].shift(lag)
-
-            # Rolling mean — recent 6 hours
-            df[f"{col}_rolling_mean_6"] = (
-                df[col]
-                .shift(1)
-                .rolling(window=6)
-                .mean()
-            )
-
-            # Rolling mean — recent 12 hours
-            df[f"{col}_rolling_mean_12"] = (
-                df[col]
-                .shift(1)
-                .rolling(window=12)
-                .mean()
-            )
-
-            # Rolling mean — recent 24 hours
-            df[f"{col}_rolling_mean_24"] = (
-                df[col]
-                .shift(1)
-                .rolling(window=24)
-                .mean()
-            )
-            # Rolling mean — recent 48 hours
-            df[f"{col}_rolling_mean_48"] = (
-                df[col]
-                .shift(1)
-                .rolling(window=48)
-                .mean()
-            )
-              # Rolling mean — recent 72 hours
-            df[f"{col}_rolling_mean_72"] = (
-                df[col]
-                .shift(1)
-                .rolling(window=72)
-                .mean()
-            )
-
-            # Rolling mean — recent 168 hours
-            df[f"{col}_rolling_mean_168"] = (
-                df[col]
-                .shift(1)
-                .rolling(window=168)
-                .mean()
-            )
-            # Rolling volatility — recent 24 hours
-            df[f"{col}_rolling_std_24"] = (
-                df[col]
-                .shift(1)
-                .rolling(window=24)
-                .std()
-            )
-    
-    
-    # ---------------------------------------------------------
-    # Day +2 target
-    # ---------------------------------------------------------
-
-    df["target_day2"] = df[target_col].shift(-48)
-
-    eval_df = df.dropna().copy()
-
-    # ---------------------------------------------------------
-    # Prepare features
-    # ---------------------------------------------------------
-
-    drop_cols = [
-        "city",
-        "timestamp",
-        target_col,
-        "target_day1",
-        "target_day2"
-    ]
-
-    X_clean = eval_df.drop(
-        columns=[
-            col for col in drop_cols
-            if col in eval_df.columns
-        ],
-        errors="ignore"
-    )
-
+    X = eval_df[list(MODEL_FEATURES)]
     y = eval_df["target_day2"]
+    print("Actual Ridge input feature count:", len(X.columns))
+    print("Whether target_day2 is in X:", "target_day2" in X.columns)
+    print("Whether target_aqi is in X:", "target_aqi" in X.columns)
+    print("Whether X columns exactly match MODEL_FEATURES:", list(X.columns) == list(MODEL_FEATURES))
 
-    print(
-        f"Actual Ridge input features: {len(X_clean.columns)}"
-    )
+    if len(MODEL_FEATURES) != 100:
+        raise RuntimeError("Expected exactly 100 MODEL_FEATURES")
+    if len(X.columns) != 100:
+        raise RuntimeError("Expected exactly 100 X columns")
+    if list(X.columns) != list(MODEL_FEATURES):
+        raise RuntimeError("X columns do not match canonical MODEL_FEATURES")
+    if "target_day2" in X.columns or "target_aqi" in X.columns:
+        raise RuntimeError("Forecast or direct target leaked into X")
 
     # ---------------------------------------------------------
     # Chronological 80/20 split
     # ---------------------------------------------------------
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X_clean,
+        X,
         y,
         test_size=0.2,
         shuffle=False
@@ -319,7 +199,7 @@ def main():
 
     baseline_preds = eval_df.loc[
         X_test.index,
-        target_col
+        "target_aqi"
     ]
 
     base_mae = mean_absolute_error(
@@ -403,39 +283,6 @@ def main():
     print(
         f"Selected feature list saved as: {features_file}"
     )
-
-    # ---------------------------------------------------------
-    # Register final Day +2 model
-    # ---------------------------------------------------------
-
-    print(
-        "\n--- Registering Final Day +2 Ridge Model ---"
-    )
-
-    mr = project.get_model_registry()
-
-    day2_model = mr.python.create_model(
-        name="karachi_aqi_day2_ridge",
-        metrics={
-            "mae": float(mae),
-            "rmse": float(rmse),
-            "r2": float(r2)
-        },
-        description=(
-            "Final Ridge Regression model for "
-            "Karachi AQI Day +2 (48-hour ahead) prediction."
-        )
-    )
-
-    day2_model.save(
-        model_file
-    )
-
-    print(
-        "\nFinal Day +2 Ridge model successfully "
-        "registered in Hopsworks Model Registry!"
-    )
-
 
 if __name__ == "__main__":
     main()
