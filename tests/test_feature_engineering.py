@@ -93,10 +93,20 @@ def test_missing_hours_are_rejected():
         normalize_and_validate_input(data)
 
 
-def test_unsorted_timestamps_are_rejected():
+def test_unsorted_timestamps_are_sorted_and_accepted():
     data = make_fixture().iloc[[1, 0] + list(range(2, 180))].reset_index(drop=True)
-    with pytest.raises(FeatureEngineeringError, match="sorted"):
-        normalize_and_validate_input(data)
+    normalized = normalize_and_validate_input(data)
+
+    assert normalized["timestamp"].is_monotonic_increasing
+    assert normalized["timestamp"].iloc[0] == pd.Timestamp(
+        "2024-08-01 00:00:00", tz="UTC"
+    )
+    assert normalized["timestamp"].iloc[-1] == pd.Timestamp(
+        "2024-08-08 11:00:00", tz="UTC"
+    )
+    assert normalized["timestamp"].diff().dropna().eq(
+        pd.Timedelta(hours=1)
+    ).all()
 
 
 def test_lags_are_causal_and_correct():

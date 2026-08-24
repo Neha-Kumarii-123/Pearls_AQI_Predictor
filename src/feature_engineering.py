@@ -109,7 +109,7 @@ def get_feature_contract() -> dict[str, object]:
 
 
 def normalize_and_validate_input(data: pd.DataFrame) -> pd.DataFrame:
-    """Normalize timestamps and validate a sorted, continuous hourly input."""
+    """Normalize timestamps and validate a continuous hourly input."""
     if not isinstance(data, pd.DataFrame):
         raise TypeError("data must be a pandas DataFrame")
 
@@ -134,10 +134,10 @@ def normalize_and_validate_input(data: pd.DataFrame) -> pd.DataFrame:
 
     if normalized["timestamp"].isna().any():
         raise FeatureEngineeringError("timestamp contains unparseable values")
+
+    normalized = normalized.sort_values("timestamp").reset_index(drop=True)
     if normalized["timestamp"].duplicated().any():
         raise FeatureEngineeringError("timestamp contains duplicate values")
-    if not normalized["timestamp"].is_monotonic_increasing:
-        raise FeatureEngineeringError("timestamp must be sorted in ascending order")
 
     intervals = normalized["timestamp"].diff().dropna()
     if not intervals.empty and not intervals.eq(pd.Timedelta(hours=1)).all():
