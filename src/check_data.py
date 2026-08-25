@@ -28,8 +28,8 @@ except Exception as e:
     print(f"-> Failed at metadata fetch: {e}")
 
 try:
-    print("\n[Step B] Attempting to retrieve 'karachi_aqi_features' version 1...")
-    aqi_fg = feature_store.get_feature_group("karachi_aqi_features", version=1)
+    print("\n[Step B] Attempting to retrieve 'karachi_aqi_features' version 5...")
+    aqi_fg = feature_store.get_feature_group("karachi_aqi_features", version=5)
     print("-> Success! Feature Group object retrieved.")
     
     print("\n[Step C] Reading data from Feature Group...")
