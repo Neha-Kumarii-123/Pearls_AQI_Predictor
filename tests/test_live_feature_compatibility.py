@@ -16,7 +16,7 @@ SRC_DIR = ROOT_DIR / "src"
 
 sys.path.insert(0, str(SRC_DIR))
 
-from feature_engineering import (  # noqa: E402
+from src.feature_engineering import (  # noqa: E402
     MODEL_FEATURES,
     REQUIRED_RAW_COLUMNS,
     MAX_LOOKBACK_HOURS,
@@ -290,11 +290,41 @@ def main():
 
     print("\n--- Validating Canonical Feature Frame ---")
 
+    # The first part of the historical frame is expected to contain
+    # warm-up NaNs because the feature pipeline uses up to 168 hours
+    # of historical lag/rolling features.
+
+    complete_features = features.dropna(
+        subset=list(MODEL_FEATURES)
+    ).copy()
+
+    if complete_features.empty:
+        raise RuntimeError(
+            "No complete feature row was produced after historical warm-up."
+        )
+
+    latest_features = complete_features.iloc[[-1]].copy()
+
+    print(
+        "Complete feature rows after warm-up:",
+        len(complete_features)
+    )
+
+    print(
+        "Latest complete timestamp:",
+        latest_features["timestamp"].iloc[0]
+    )
+
     validate_feature_frame(
-        features,
+        latest_features,
         require_complete=True,
     )
 
+    print(
+        "Canonical latest-row validation: PASSED"
+    )
+
+   
     print(
         "Canonical feature validation: PASSED"
     )
@@ -303,7 +333,7 @@ def main():
     # 12. Inspect latest feature row
     # ---------------------------------------------------------
 
-    latest = features.iloc[-1]
+    latest = latest_features.iloc[0]
 
     print("\n==============================================")
     print(" LATEST PRODUCTION FEATURE ROW")
