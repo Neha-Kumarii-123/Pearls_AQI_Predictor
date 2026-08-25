@@ -23,10 +23,16 @@ def main():
     fs = project.get_feature_store()
     
     print("--- Fetching Feature Group ---")
-    feature_group = fs.get_feature_group(name="karachi_aqi_features", version=4)
-    df = feature_group.select(list(REQUIRED_RAW_COLUMNS)).read()
+    feature_group = fs.get_feature_group(name="karachi_aqi_features", version=5)
+    df = feature_group.read(online=False, 
+    read_options={"arrow_flight_config": {"timeout": 900}})
 
     print("Raw Hopsworks shape:", df.shape)
+    print("Raw columns:", list(df.columns))
+    print("Raw missing values:", df.isna().sum().sum())
+
+    if df.isna().sum().sum() != 0:
+        raise RuntimeError("Raw v5 dataset contains missing values")
     features = build_rich_features(df)
     validate_feature_frame(features)
     print("Shared feature-frame shape:", features.shape)
@@ -36,6 +42,11 @@ def main():
     eval_df = features.dropna(
         subset=list(MODEL_FEATURES) + ["target_day1"]
     ).copy()
+    print("Usable training/evaluation rows:", len(eval_df))
+    print(
+        "Warm-up rows removed:",
+        len(features) - len(eval_df)
+    )
 
     X = eval_df[list(MODEL_FEATURES)]
     y = eval_df["target_day1"]

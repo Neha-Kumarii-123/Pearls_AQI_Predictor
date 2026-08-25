@@ -160,7 +160,7 @@ def build_model_bundle(spec: dict[str, Any], *, project_name: str | None = None)
             "target_aqi",
         ],
         "feature_group": "karachi_aqi_features",
-        "feature_group_version": 4,
+        "feature_group_version": 5,
         "project_name": project_name,
     }
 
@@ -249,17 +249,7 @@ def register_all(project: Any, *, apply: bool) -> None:
             for m in project.get_model_registry().get_models(spec["name"])
         ]
 
-        # Day +1 version 3 was already successfully registered
-        if (
-            spec["name"] == "karachi_aqi_day1_xgboost"
-            and 3 in existing_versions
-        ):
-            print(
-                f"Skipping {spec['name']} version 3 "
-                f"(already registered successfully)."
-            )
-            continue
-
+        
         register_model(project, spec)
 
 

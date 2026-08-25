@@ -89,7 +89,7 @@ WEATHER_URL = (
 HOPSWORKS_HOST = "eu-west.cloud.hopsworks.ai"
 
 FEATURE_GROUP_NAME = "karachi_aqi_features"
-FEATURE_GROUP_VERSION = 4
+FEATURE_GROUP_VERSION = 5
 
 PRIMARY_KEY = ["city", "timestamp"]
 

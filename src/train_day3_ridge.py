@@ -32,10 +32,10 @@ def main():
 
     feature_group = fs.get_feature_group(
         name="karachi_aqi_features",
-        version=4
+        version=5
     )
 
-    df = feature_group.select(list(REQUIRED_RAW_COLUMNS)).read()
+    df = feature_group.select(list(REQUIRED_RAW_COLUMNS)).read(read_options={"arrow_flight_config": {"timeout": 900}})
 
     print("Raw Hopsworks shape:", df.shape)
     features = build_rich_features(df)
