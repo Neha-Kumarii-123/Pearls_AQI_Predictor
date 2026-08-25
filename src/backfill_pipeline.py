@@ -1,179 +1,581 @@
-import os
-import datetime
-import pandas as pd
-import numpy as np
-import openmeteo_requests
-import requests_cache
-from retry_requests import retry
-import hopsworks
-from dotenv import load_dotenv
+"""
+Historical backfill pipeline for Karachi AQI Predictor.
 
-# Load environment variables
+Purpose:
+    Fetch historical raw weather + air-quality data from Open-Meteo
+    and store the canonical raw dataset in Hopsworks Feature Group v5.
+
+Important:
+    Feature engineering is NOT performed here.
+
+    The shared feature_engineering.py is responsible for converting
+    these raw columns into the canonical 100 MODEL_FEATURES during
+    training and live inference.
+"""
+
+from __future__ import annotations
+
+import os
+
+import hopsworks
+import openmeteo_requests
+import pandas as pd
+import requests_cache
+from dotenv import load_dotenv
+from retry_requests import retry
+
+
+# ---------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------
+
 load_dotenv()
 
-# Setup Open-Meteo API Client with Caching & Retry mechanism
-cache_session = requests_cache.CachedSession('.cache', expire_after=-1)
-retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
-openmeteo = openmeteo_requests.Client(session=retry_session)
 
-def calculate_humidex(temp_c, humidity):
-    """Calculates Canadian Humidex from Temperature and Humidity."""
-    e = 6.11 * (10 ** ((7.5 * temp_c) / (237.7 + temp_c))) * (humidity / 100.0)
-    humidex = temp_c + (5/9) * (e - 10)
-    return humidex
+# ---------------------------------------------------------------------
+# Open-Meteo client
+# ---------------------------------------------------------------------
 
-def fetch_historical_data(latitude=24.8607, longitude=67.0011, start_date="2021-08-01", end_date="2026-08-01"):
-    """
-    Fetches hourly historical Air Quality and Weather data for Karachi from Open-Meteo.
-    """
-    print(f" Fetching historical data for Karachi ({start_date} to {end_date})...")
-    
-    # 1. Fetch Air Quality historical metrics
-    air_quality_url = "https://air-quality-api.open-meteo.com/v1/air-quality"
-    air_params = {
+cache_session = requests_cache.CachedSession(
+    ".cache",
+    expire_after=-1,
+)
+
+retry_session = retry(
+    cache_session,
+    retries=5,
+    backoff_factor=0.2,
+)
+
+openmeteo = openmeteo_requests.Client(
+    session=retry_session
+)
+
+
+# ---------------------------------------------------------------------
+# Karachi configuration
+# ---------------------------------------------------------------------
+
+KARACHI_LATITUDE = 24.8607
+KARACHI_LONGITUDE = 67.0011
+
+AIR_QUALITY_URL = (
+    "https://air-quality-api.open-meteo.com/v1/air-quality"
+)
+
+WEATHER_URL = (
+    "https://archive-api.open-meteo.com/v1/archive"
+)
+
+
+# ---------------------------------------------------------------------
+# Hopsworks configuration
+# ---------------------------------------------------------------------
+
+FEATURE_GROUP_NAME = "karachi_aqi_features"
+FEATURE_GROUP_VERSION = 5
+
+PRIMARY_KEY = [
+    "city",
+    "timestamp",
+]
+
+
+# ---------------------------------------------------------------------
+# Canonical raw schema
+# ---------------------------------------------------------------------
+
+RAW_COLUMNS = (
+    "city",
+    "timestamp",
+    "pm25",
+    "pm10",
+    "ozone",
+    "nitrogen_dioxide",
+    "sulphur_dioxide",
+    "carbon_monoxide",
+    "temperature",
+    "humidity",
+    "target_aqi",
+)
+
+
+# ---------------------------------------------------------------------
+# Historical range
+# ---------------------------------------------------------------------
+
+START_DATE = "2024-08-01"
+END_DATE = "2026-08-01"
+
+
+# ---------------------------------------------------------------------
+# Fetch Air Quality
+# ---------------------------------------------------------------------
+
+def fetch_air_quality(
+    latitude: float = KARACHI_LATITUDE,
+    longitude: float = KARACHI_LONGITUDE,
+    start_date: str = START_DATE,
+    end_date: str = END_DATE,
+) -> pd.DataFrame:
+
+    print(
+        f"\nFetching air-quality data: "
+        f"{start_date} → {end_date}"
+    )
+
+    params = {
         "latitude": latitude,
         "longitude": longitude,
         "start_date": start_date,
         "end_date": end_date,
-        "hourly": ["pm10", "pm2_5", "us_aqi"]
+        "timezone": "UTC",
+        "hourly": [
+            "pm10",
+            "pm2_5",
+            "ozone",
+            "nitrogen_dioxide",
+            "sulphur_dioxide",
+            "carbon_monoxide",
+            "us_aqi",
+        ],
     }
-    air_responses = openmeteo.weather_api(air_quality_url, params=air_params)
-    air_res = air_responses[0]
-    
-    hourly_air = air_res.Hourly()
-    air_dates = pd.date_range(
-        start=pd.to_datetime(hourly_air.Time(), unit="s", utc=True),
-        end=pd.to_datetime(hourly_air.TimeEnd(), unit="s", utc=True),
-        freq=pd.Timedelta(seconds=hourly_air.Interval()),
-        inclusive="left"
-    )
-    
-    df_air = pd.DataFrame({
-        "timestamp_dt": air_dates,
-        "pm25": hourly_air.Variables(1).ValuesAsNumpy(),
-        "pm10": hourly_air.Variables(0).ValuesAsNumpy(),
-        "target_aqi": hourly_air.Variables(2).ValuesAsNumpy()
-    })
 
-    # 2. Fetch Weather historical metrics (Temperature & Humidity)
-    weather_url = "https://archive-api.open-meteo.com/v1/archive"
-    weather_params = {
-        "latitude": latitude,
-        "longitude": longitude,
-        "start_date": start_date,
-        "end_date": end_date,
-        "hourly": ["temperature_2m", "relative_humidity_2m"]
-    }
-    weather_responses = openmeteo.weather_api(weather_url, params=weather_params)
-    weather_res = weather_responses[0]
-    
-    hourly_weather = weather_res.Hourly()
-    weather_dates = pd.date_range(
-        start=pd.to_datetime(hourly_weather.Time(), unit="s", utc=True),
-        end=pd.to_datetime(hourly_weather.TimeEnd(), unit="s", utc=True),
-        freq=pd.Timedelta(seconds=hourly_weather.Interval()),
-        inclusive="left"
+    responses = openmeteo.weather_api(
+        AIR_QUALITY_URL,
+        params=params,
     )
-    
-    df_weather = pd.DataFrame({
-        "timestamp_dt": weather_dates,
-        "temperature": hourly_weather.Variables(0).ValuesAsNumpy(),
-        "humidity": hourly_weather.Variables(1).ValuesAsNumpy()
-    })
 
-    # Merge Air Quality and Weather Dataframes on timestamp
-    df = pd.merge(df_air, df_weather, on="timestamp_dt", how="inner")
-    
-    # Fill missing values if any exist using forward fill
-    df = df.ffill().bfill()
-    
+    response = responses[0]
+    hourly = response.Hourly()
+
+    timestamps = pd.date_range(
+        start=pd.to_datetime(
+            hourly.Time(),
+            unit="s",
+            utc=True,
+        ),
+        end=pd.to_datetime(
+            hourly.TimeEnd(),
+            unit="s",
+            utc=True,
+        ),
+        freq=pd.Timedelta(
+            seconds=hourly.Interval()
+        ),
+        inclusive="left",
+    )
+
+    df = pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "pm25": hourly.Variables(1).ValuesAsNumpy(),
+            "pm10": hourly.Variables(0).ValuesAsNumpy(),
+            "ozone": hourly.Variables(2).ValuesAsNumpy(),
+            "nitrogen_dioxide": hourly.Variables(3).ValuesAsNumpy(),
+            "sulphur_dioxide": hourly.Variables(4).ValuesAsNumpy(),
+            "carbon_monoxide": hourly.Variables(5).ValuesAsNumpy(),
+            "target_aqi": hourly.Variables(6).ValuesAsNumpy(),
+        }
+    )
+
+    print(
+        f"Air-quality observations: {len(df)}"
+    )
+
     return df
 
-def process_features(df):
-    """
-    Applies feature engineering transformations matching the live pipeline schema.
-    Keeps `target_aqi` as the direct source AQI label, without any PM-to-AQI formula.
-    """
-    print(" Processing features (Humidex, Temporal signals, Rate of Change)...")
-    
-    # 1. Constant Identifier
+
+# ---------------------------------------------------------------------
+# Fetch Weather
+# ---------------------------------------------------------------------
+
+def fetch_weather(
+    latitude: float = KARACHI_LATITUDE,
+    longitude: float = KARACHI_LONGITUDE,
+    start_date: str = START_DATE,
+    end_date: str = END_DATE,
+) -> pd.DataFrame:
+
+    print(
+        f"\nFetching weather data: "
+        f"{start_date} → {end_date}"
+    )
+
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "start_date": start_date,
+        "end_date": end_date,
+        "timezone": "UTC",
+        "hourly": [
+            "temperature_2m",
+            "relative_humidity_2m",
+        ],
+    }
+
+    responses = openmeteo.weather_api(
+        WEATHER_URL,
+        params=params,
+    )
+
+    response = responses[0]
+    hourly = response.Hourly()
+
+    timestamps = pd.date_range(
+        start=pd.to_datetime(
+            hourly.Time(),
+            unit="s",
+            utc=True,
+        ),
+        end=pd.to_datetime(
+            hourly.TimeEnd(),
+            unit="s",
+            utc=True,
+        ),
+        freq=pd.Timedelta(
+            seconds=hourly.Interval()
+        ),
+        inclusive="left",
+    )
+
+    df = pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "temperature": hourly.Variables(0).ValuesAsNumpy(),
+            "humidity": hourly.Variables(1).ValuesAsNumpy(),
+        }
+    )
+
+    print(
+        f"Weather observations: {len(df)}"
+    )
+
+    return df
+
+
+# ---------------------------------------------------------------------
+# Build canonical raw dataframe
+# ---------------------------------------------------------------------
+
+def build_raw_dataframe(
+    air_quality: pd.DataFrame,
+    weather: pd.DataFrame,
+) -> pd.DataFrame:
+
+    print("\nMerging air-quality and weather data...")
+
+    df = pd.merge(
+        air_quality,
+        weather,
+        on="timestamp",
+        how="inner",
+    )
+
+    if df.empty:
+        raise RuntimeError(
+            "No overlapping timestamps between "
+            "air-quality and weather data."
+        )
+
     df["city"] = "karachi"
 
-    # Target variable remains the direct AQI value from the source dataset.
-    df["target_aqi"] = df["target_aqi"].astype("float64")
-    
-    # 2. Convert datetime to UTC Unix timestamp in milliseconds
-    df["timestamp"] = df["timestamp_dt"].astype('int64') // 10**6
-    
-    # 3. Domain Metric: Canadian Humidex
-    df["humidex"] = calculate_humidex(df["temperature"], df["humidity"])
-    
-    # 4. Temporal Features
-    df["hour"] = df["timestamp_dt"].dt.hour.astype('int64')
-    df["day"] = df["timestamp_dt"].dt.day.astype('int64')
-    df["month"] = df["timestamp_dt"].dt.month.astype('int64')
-    df["day_of_week"] = df["timestamp_dt"].dt.dayofweek.astype('int64')
-    
-    # 5. Derived Feature: AQI Change Rate (matching slide requirement)
-    df["aqi_change_rate"] = df["target_aqi"].diff().fillna(0.0)
-    
-    # Convert all numeric float columns to float64 (double) to match Hopsworks schema
-    float_cols = ["pm25", "pm10", "temperature", "humidity", "humidex", "aqi_change_rate", "target_aqi"]
-    df[float_cols] = df[float_cols].astype('float64')
-    
-    # Clean up columns to match Hopsworks Feature Group schema exactly
-    feature_cols = [
-        "city", "timestamp", "pm25", "pm10", 
-        "temperature", "humidity", "humidex", 
-        "aqi_change_rate",
-        "hour", "day", "month", "day_of_week", "target_aqi"
-    ]
-    
-    return df[feature_cols]
-def upload_to_hopsworks(dataframe):
-    """
-    Connects to Hopsworks Feature Store and performs a batch upload of historical data.
-    """
-    print(" Connecting to Hopsworks Feature Store...")
-    
-    api_key = os.getenv("HOPSWORKS_API_KEY")
-    if not api_key:
-        raise ValueError("HOPSWORKS_API_KEY not found in environment variables!")
-        
-    project = hopsworks.login(api_key_value=api_key)
-    fs = project.get_feature_store()
-    
-    # Get or create Feature Group 
-    print(" Accessing/Creating Feature Group: karachi_aqi_features (v3)...")
-    feature_group = fs.get_or_create_feature_group(
-        name="karachi_aqi_features",
-        version=4,
-        primary_key=["city", "timestamp"],
-        event_time="timestamp",
-        description="Live weather telemetry & Canadian Humidex domain features for AQI prediction",
-        online_enabled=True
+    df = df[
+        [
+            "city",
+            "timestamp",
+            "pm25",
+            "pm10",
+            "ozone",
+            "nitrogen_dioxide",
+            "sulphur_dioxide",
+            "carbon_monoxide",
+            "temperature",
+            "humidity",
+            "target_aqi",
+        ]
+    ].copy()
+
+    df["timestamp"] = pd.to_datetime(
+        df["timestamp"],
+        utc=True,
     )
-    
-    # Batch insert historical data using dataframe parameter safely
-    print(f" Inserting {len(dataframe)} historical feature rows into Hopsworks...")
+
+    numeric_columns = [
+        column
+        for column in RAW_COLUMNS
+        if column not in ("city", "timestamp")
+    ]
+
+    for column in numeric_columns:
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
+        ).astype("float64")
+
+    df = df.sort_values(
+        "timestamp"
+    ).reset_index(drop=True)
+
+    return df
+
+
+# ---------------------------------------------------------------------
+# Validate raw dataframe
+# ---------------------------------------------------------------------
+
+def validate_raw_dataframe(
+    df: pd.DataFrame,
+) -> None:
+
+    print("\nValidating canonical raw dataframe...")
+
+    # Column check
+    missing_columns = [
+        column
+        for column in RAW_COLUMNS
+        if column not in df.columns
+    ]
+
+    if missing_columns:
+        raise RuntimeError(
+            "Missing required columns: "
+            + ", ".join(missing_columns)
+        )
+
+    # Timestamp check
+    if df["timestamp"].isna().any():
+        raise RuntimeError(
+            "Invalid timestamp values detected."
+        )
+
+    if df["timestamp"].duplicated().any():
+        raise RuntimeError(
+            "Duplicate timestamps detected."
+        )
+
+    # Numeric missing values
+    numeric_columns = [
+        column
+        for column in RAW_COLUMNS
+        if column not in ("city", "timestamp")
+    ]
+
+    missing_counts = (
+        df[numeric_columns]
+        .isna()
+        .sum()
+    )
+
+    missing = missing_counts[
+        missing_counts > 0
+    ]
+
+    if not missing.empty:
+        details = ", ".join(
+            f"{column}={int(count)}"
+            for column, count in missing.items()
+        )
+
+        raise RuntimeError(
+            "Missing values detected: "
+            + details
+        )
+
+    # Hourly continuity
+    intervals = (
+        df["timestamp"]
+        .diff()
+        .dropna()
+    )
+
+    if not intervals.empty:
+
+        if not intervals.eq(
+            pd.Timedelta(hours=1)
+        ).all():
+
+            raise RuntimeError(
+                "Dataset is not a continuous hourly "
+                "time series."
+            )
+
+    print(
+        "Validation passed."
+    )
+
+    print(
+        f"Rows: {len(df)}"
+    )
+
+    print(
+        f"Columns: {len(df.columns)}"
+    )
+
+    print(
+        "Missing values: 0"
+    )
+
+
+# ---------------------------------------------------------------------
+# Upload to Hopsworks
+# ---------------------------------------------------------------------
+
+def upload_to_hopsworks(
+    dataframe: pd.DataFrame,
+) -> None:
+
+    print(
+        "\nConnecting to Hopsworks..."
+    )
+
+    api_key = os.getenv(
+        "HOPSWORKS_API_KEY"
+    )
+
+    if not api_key:
+        raise RuntimeError(
+            "HOPSWORKS_API_KEY is not set."
+        )
+
+    project = hopsworks.login(
+        api_key_value=api_key
+    )
+
+    fs = project.get_feature_store()
+
+    print(
+        f"Accessing Feature Group "
+        f"{FEATURE_GROUP_NAME} "
+        f"v{FEATURE_GROUP_VERSION}..."
+    )
+
+    feature_group = fs.get_or_create_feature_group(
+        name=FEATURE_GROUP_NAME,
+        version=FEATURE_GROUP_VERSION,
+        primary_key=PRIMARY_KEY,
+        event_time="timestamp",
+        description=(
+            "Canonical raw hourly Karachi AQI "
+            "weather and pollutant observations. "
+            "Feature engineering is performed "
+            "outside the Feature Group."
+        ),
+        online_enabled=True,
+    )
+
     batch_size = 3000
-    for i in range(0, len(dataframe), batch_size):
-        df_batch = dataframe.iloc[i : i + batch_size]
-        print(f"Inserting rows {i} to {i + len(df_batch)} into Hopsworks...")
-        feature_group.insert(df_batch, write_options={"wait_for_job": True})
-        
-    print(" Historical backfill insertion completed successfully!")
+
+    print(
+        f"\nUploading {len(dataframe)} rows..."
+    )
+
+    for start in range(
+        0,
+        len(dataframe),
+        batch_size,
+    ):
+
+        end = min(
+            start + batch_size,
+            len(dataframe),
+        )
+
+        batch = dataframe.iloc[
+            start:end
+        ].copy()
+
+        print(
+            f"Inserting rows "
+            f"{start} → {end}"
+        )
+
+        feature_group.insert(
+            batch,
+            write_options={
+                "wait_for_job": True,
+            },
+        )
+
+    print(
+        "\nHistorical backfill completed successfully."
+    )
+
+
+# ---------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------
+
+def main():
+
+    print(
+        "\n=============================================="
+    )
+    print(
+        " KARACHI AQI HISTORICAL BACKFILL — v5"
+    )
+    print(
+        "=============================================="
+    )
+
+    # 1. Fetch
+    air_quality = fetch_air_quality()
+
+    weather = fetch_weather()
+
+    # 2. Build canonical raw dataset
+    raw_df = build_raw_dataframe(
+        air_quality,
+        weather,
+    )
+
+    # 3. Validate
+    validate_raw_dataframe(
+        raw_df
+    )
+
+    # 4. Display sample
+    print(
+        "\n--- Canonical Raw Data Sample ---"
+    )
+
+    print(
+        raw_df.head()
+    )
+
+    print(
+        "\nCanonical columns:"
+    )
+
+    print(
+        list(raw_df.columns)
+    )
+
+    print(
+        "\n--- Uploading to Hopsworks v5 ---"
+    )
+
+    # 5. Upload
+    upload_to_hopsworks(
+        raw_df
+    )
+
+    print(
+        "\n=============================================="
+    )
+    print(
+        " BACKFILL SUCCESS"
+    )
+    print(
+        " Feature Group: karachi_aqi_features v5"
+    )
+    print(
+        f" Rows: {len(raw_df)}"
+    )
+    print(
+        "=============================================="
+    )
+
 
 if __name__ == "__main__":
-    # Fetch 5 years of historical data for Karachi (Aug 2024 to July 2026)
-    df_raw = fetch_historical_data(start_date="2021-08-01", end_date="2026-08-01")
-    
-    # Apply Feature Engineering
-    df_processed = process_features(df_raw)
-    
-    print("\n--- Sample Processed Historical Features ---")
-    print(df_processed.head())
-    print("-------------------------------------------\n")
-    
-    # Push to Hopsworks Cloud Feature Store
-    upload_to_hopsworks(df_processed)
+    main()
