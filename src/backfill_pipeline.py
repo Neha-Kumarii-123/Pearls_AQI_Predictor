@@ -1,16 +1,20 @@
+
 """
-Historical backfill pipeline for Karachi AQI Predictor.
+Historical feature backfill pipeline for Karachi AQI Predictor — v6.
 
 Purpose:
-    Fetch historical raw weather + air-quality data from Open-Meteo
-    and store the canonical raw dataset in Hopsworks Feature Group v5.
+    Fetch historical raw weather + air-quality data directly from
+    Open-Meteo, transform it using the project's shared
+    feature_engineering.py, and store the canonical computed
+    100 MODEL_FEATURES in Hopsworks Feature Group v6.
 
 Important:
-    Feature engineering is NOT performed here.
-
-    The shared feature_engineering.py is responsible for converting
-    these raw columns into the canonical 100 MODEL_FEATURES during
-    training and live inference.
+    - v5 remains untouched.
+    - v6 does NOT read from v5.
+    - v6 does NOT store raw data.
+    - All feature calculations come from the existing
+      shared feature_engineering.py.
+    - The canonical 100 MODEL_FEATURES are unchanged.
 """
 
 from __future__ import annotations
@@ -23,6 +27,14 @@ import pandas as pd
 import requests_cache
 from dotenv import load_dotenv
 from retry_requests import retry
+
+from feature_engineering import (
+    MODEL_FEATURES,
+    REQUIRED_RAW_COLUMNS,
+    MAX_LOOKBACK_HOURS,
+    build_rich_features,
+    validate_feature_frame,
+)
 
 
 # ---------------------------------------------------------------------
@@ -73,7 +85,7 @@ WEATHER_URL = (
 # ---------------------------------------------------------------------
 
 FEATURE_GROUP_NAME = "karachi_aqi_features"
-FEATURE_GROUP_VERSION = 5
+FEATURE_GROUP_VERSION = 6
 
 PRIMARY_KEY = [
     "city",
@@ -102,6 +114,9 @@ RAW_COLUMNS = (
 
 # ---------------------------------------------------------------------
 # Historical range
+#
+# Same historical period as v5 so that the resulting feature
+# distribution remains directly comparable.
 # ---------------------------------------------------------------------
 
 START_DATE = "2024-08-01"
@@ -313,15 +328,16 @@ def build_raw_dataframe(
             errors="coerce",
         ).astype("float64")
 
-    df = df.sort_values(
-        "timestamp"
-    ).reset_index(drop=True)
+    df = (
+        df.sort_values("timestamp")
+        .reset_index(drop=True)
+    )
 
     return df
 
 
 # ---------------------------------------------------------------------
-# Validate raw dataframe
+# Validate canonical raw dataframe
 # ---------------------------------------------------------------------
 
 def validate_raw_dataframe(
@@ -330,7 +346,6 @@ def validate_raw_dataframe(
 
     print("\nValidating canonical raw dataframe...")
 
-    # Column check
     missing_columns = [
         column
         for column in RAW_COLUMNS
@@ -343,7 +358,6 @@ def validate_raw_dataframe(
             + ", ".join(missing_columns)
         )
 
-    # Timestamp check
     if df["timestamp"].isna().any():
         raise RuntimeError(
             "Invalid timestamp values detected."
@@ -354,7 +368,6 @@ def validate_raw_dataframe(
             "Duplicate timestamps detected."
         )
 
-    # Numeric missing values
     numeric_columns = [
         column
         for column in RAW_COLUMNS
@@ -382,7 +395,6 @@ def validate_raw_dataframe(
             + details
         )
 
-    # Hourly continuity
     intervals = (
         df["timestamp"]
         .diff()
@@ -400,9 +412,13 @@ def validate_raw_dataframe(
                 "time series."
             )
 
-    print(
-        "Validation passed."
-    )
+    if len(df) <= MAX_LOOKBACK_HOURS:
+        raise RuntimeError(
+            "Not enough historical observations for "
+            "feature engineering."
+        )
+
+    print("Raw validation passed.")
 
     print(
         f"Rows: {len(df)}"
@@ -418,7 +434,148 @@ def validate_raw_dataframe(
 
 
 # ---------------------------------------------------------------------
-# Upload to Hopsworks
+# Build canonical computed features
+# ---------------------------------------------------------------------
+
+def build_computed_features(
+    raw_df: pd.DataFrame,
+) -> pd.DataFrame:
+
+    print("\n==============================================")
+    print(" RUNNING SHARED FEATURE ENGINEERING")
+    print("==============================================")
+
+    features = build_rich_features(
+        raw_df
+    )
+
+    print(
+        "\nGenerated feature frame shape:",
+        features.shape
+    )
+
+    print(
+        "Expected MODEL_FEATURES:",
+        len(MODEL_FEATURES)
+    )
+
+    if len(MODEL_FEATURES) != 100:
+        raise RuntimeError(
+            "Expected exactly 100 MODEL_FEATURES."
+        )
+
+    actual_model_features = [
+        column
+        for column in features.columns
+        if column in MODEL_FEATURES
+    ]
+
+    if actual_model_features != list(
+        MODEL_FEATURES
+    ):
+        raise RuntimeError(
+            "Generated feature order does not "
+            "match canonical MODEL_FEATURES."
+        )
+
+    print(
+        "100-feature schema check: PASSED"
+    )
+
+    # -------------------------------------------------------------
+    # Remove warm-up rows.
+    #
+    # The feature engineering requires up to 168 hours of history.
+    # -------------------------------------------------------------
+
+    complete_features = features.dropna(
+        subset=list(MODEL_FEATURES)
+    ).copy()
+
+    if complete_features.empty:
+        raise RuntimeError(
+            "No complete feature rows were produced."
+        )
+
+    print(
+        "Complete rows after warm-up:",
+        len(complete_features)
+    )
+
+    # -------------------------------------------------------------
+    # Validate complete feature frame.
+    # -------------------------------------------------------------
+
+    validate_feature_frame(
+        complete_features,
+        require_complete=True,
+    )
+
+    print(
+        "Canonical feature validation: PASSED"
+    )
+
+    # -------------------------------------------------------------
+    # Store only the canonical computed features plus identifiers.
+    #
+    # target_aqi is intentionally retained because it is part of
+    # the project's existing historical source information and
+    # feature-engineering context. It is NOT part of MODEL_FEATURES.
+    # -------------------------------------------------------------
+
+    output_columns = [
+        "city",
+        "timestamp",
+        "target_aqi",
+    ] + list(MODEL_FEATURES)
+
+    computed = complete_features[
+        output_columns
+    ].copy()
+
+    # -------------------------------------------------------------
+    # Final safety checks.
+    # -------------------------------------------------------------
+
+    if len(MODEL_FEATURES) != 100:
+        raise RuntimeError(
+            "Canonical feature count changed."
+        )
+
+    if computed[list(MODEL_FEATURES)].isna().any().any():
+        raise RuntimeError(
+            "Computed feature dataset contains NaN values."
+        )
+
+    actual_feature_order = [
+        column
+        for column in computed.columns
+        if column in MODEL_FEATURES
+    ]
+
+    if actual_feature_order != list(
+        MODEL_FEATURES
+    ):
+        raise RuntimeError(
+            "Computed feature order does not match "
+            "MODEL_FEATURES."
+        )
+
+    print(
+        "Final computed feature dataset shape:",
+        computed.shape
+    )
+
+    print(
+        "Final computed MODEL_FEATURES:",
+        len(MODEL_FEATURES)
+    )
+
+    return computed
+
+
+# ---------------------------------------------------------------------
+# Upload computed features to Hopsworks v6
 # ---------------------------------------------------------------------
 
 def upload_to_hopsworks(
@@ -445,7 +602,7 @@ def upload_to_hopsworks(
     fs = project.get_feature_store()
 
     print(
-        f"Accessing Feature Group "
+        f"Creating/accessing Feature Group "
         f"{FEATURE_GROUP_NAME} "
         f"v{FEATURE_GROUP_VERSION}..."
     )
@@ -456,18 +613,24 @@ def upload_to_hopsworks(
         primary_key=PRIMARY_KEY,
         event_time="timestamp",
         description=(
-            "Canonical raw hourly Karachi AQI "
-            "weather and pollutant observations. "
-            "Feature engineering is performed "
-            "outside the Feature Group."
+            "Canonical computed hourly Karachi AQI "
+            "features generated by the shared "
+            "feature_engineering.py pipeline. "
+            "Contains the project's canonical "
+            "100 MODEL_FEATURES."
         ),
         online_enabled=True,
     )
 
-    batch_size = 3000
+    # Smaller batches reduce the chance of temporary
+    # Hopsworks connection failures during large uploads.
+    batch_size = 1000
+
+    # Retry only the individual batch that fails.
+    max_retries = 3
 
     print(
-        f"\nUploading {len(dataframe)} rows..."
+        f"\nUploading {len(dataframe)} computed rows..."
     )
 
     for start in range(
@@ -486,19 +649,57 @@ def upload_to_hopsworks(
         ].copy()
 
         print(
-            f"Inserting rows "
+            f"\nInserting rows "
             f"{start} → {end}"
         )
 
-        feature_group.insert(
-            batch,
-            write_options={
-                "wait_for_job": True,
-            },
-        )
+        for attempt in range(
+            1,
+            max_retries + 1,
+        ):
+
+            try:
+
+                print(
+                    f"Upload attempt "
+                    f"{attempt}/{max_retries}"
+                )
+
+                feature_group.insert(
+                    batch,
+                    write_options={
+                        "wait_for_job": True,
+                    },
+                )
+
+                print(
+                    f"Batch {start} → {end} "
+                    f"uploaded successfully."
+                )
+
+                break
+
+            except Exception as error:
+
+                print(
+                    f"Upload attempt {attempt} "
+                    f"failed: {error}"
+                )
+
+                if attempt == max_retries:
+
+                    raise RuntimeError(
+                        f"Failed to upload batch "
+                        f"{start} → {end} after "
+                        f"{max_retries} attempts."
+                    ) from error
+
+                print(
+                    "Retrying this batch..."
+                )
 
     print(
-        "\nHistorical backfill completed successfully."
+        "\nComputed feature backfill uploaded successfully."
     )
 
 
@@ -511,32 +712,46 @@ def main():
     print(
         "\n=============================================="
     )
+
     print(
-        " KARACHI AQI HISTORICAL BACKFILL — v5"
+        " KARACHI AQI COMPUTED FEATURE BACKFILL — v6"
     )
+
     print(
         "=============================================="
     )
 
-    # 1. Fetch
+    # -------------------------------------------------------------
+    # 1. Fetch raw data DIRECTLY from Open-Meteo
+    # -------------------------------------------------------------
+
     air_quality = fetch_air_quality()
 
     weather = fetch_weather()
 
-    # 2. Build canonical raw dataset
+    # -------------------------------------------------------------
+    # 2. Build canonical raw dataframe
+    # -------------------------------------------------------------
+
     raw_df = build_raw_dataframe(
         air_quality,
         weather,
     )
 
-    # 3. Validate
+    # -------------------------------------------------------------
+    # 3. Validate raw data
+    # -------------------------------------------------------------
+
     validate_raw_dataframe(
         raw_df
     )
 
-    # 4. Display sample
+    # -------------------------------------------------------------
+    # 4. Display raw sample
+    # -------------------------------------------------------------
+
     print(
-        "\n--- Canonical Raw Data Sample ---"
+        "\n--- Raw Data Sample ---"
     )
 
     print(
@@ -544,34 +759,92 @@ def main():
     )
 
     print(
-        "\nCanonical columns:"
+        "\nRaw columns:"
     )
 
     print(
         list(raw_df.columns)
     )
 
-    print(
-        "\n--- Uploading to Hopsworks v5 ---"
-    )
+    # -------------------------------------------------------------
+    # 5. Transform raw → canonical 100 features
+    # -------------------------------------------------------------
 
-    # 5. Upload
-    upload_to_hopsworks(
+    computed_features = build_computed_features(
         raw_df
     )
+
+    # -------------------------------------------------------------
+    # 6. Display computed feature sample
+    # -------------------------------------------------------------
+
+    print(
+        "\n--- Computed Feature Sample ---"
+    )
+
+    print(
+        computed_features.head()
+    )
+
+    print(
+        "\nComputed feature columns:"
+    )
+
+    print(
+        list(computed_features.columns)
+    )
+
+    # -------------------------------------------------------------
+    # 7. Upload ONLY computed features to v6
+    # -------------------------------------------------------------
+
+    print(
+        "\n--- Uploading COMPUTED FEATURES to Hopsworks v6 ---"
+    )
+
+    upload_to_hopsworks(
+        computed_features
+    )
+
+    # -------------------------------------------------------------
+    # Success
+    # -------------------------------------------------------------
 
     print(
         "\n=============================================="
     )
+
     print(
-        " BACKFILL SUCCESS"
+        " V6 COMPUTED FEATURE BACKFILL SUCCESS"
     )
+
     print(
-        " Feature Group: karachi_aqi_features v5"
+        f" Feature Group: "
+        f"{FEATURE_GROUP_NAME} v{FEATURE_GROUP_VERSION}"
     )
+
     print(
-        f" Rows: {len(raw_df)}"
+        f" Computed rows: "
+        f"{len(computed_features)}"
     )
+
+    print(
+        f" MODEL_FEATURES stored: "
+        f"{len(MODEL_FEATURES)}"
+    )
+
+    print(
+        " Source: Open-Meteo API"
+    )
+
+    print(
+        " Transformation: shared feature_engineering.py"
+    )
+
+    print(
+        " v5: untouched"
+    )
+
     print(
         "=============================================="
     )
@@ -579,3 +852,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
