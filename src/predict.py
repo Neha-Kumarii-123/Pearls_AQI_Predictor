@@ -1,9 +1,14 @@
+
 """
 Production inference pipeline for the Karachi AQI Predictor.
 
 Production flow:
 
-    Live feature pipeline
+    Open-Meteo
+        ↓
+    Production Feature Pipeline
+        ↓
+    Hopsworks Feature Group v6
         ↓
     Latest complete 100-feature row
         ↓
@@ -15,11 +20,19 @@ Production flow:
         ↓
     Three AQI predictions
 
-Important:
-    This file is an orchestration layer only.
-
-    Feature engineering remains inside feature_pipeline.py
-    and feature_engineering.py.
+Important
+---------
+1. Day +1, Day +2, and Day +3 models are already trained and locked.
+2. This file does NOT retrain or modify any model.
+3. Feature engineering remains inside feature_pipeline.py
+   and feature_engineering.py.
+4. v6 remains the canonical production Feature Group.
+5. If new hourly observations exist, they are written to v6.
+6. If v6 is already up to date, the latest existing v6 row is used.
+7. If multiple missing hours exist, only the latest generated row
+   is used for the current prediction.
+8. The exact model feature contract stored in model metadata is
+   validated before prediction.
 """
 
 from __future__ import annotations
@@ -34,12 +47,15 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from feature_engineering import MODEL_FEATURES
-from feature_pipeline import AirQualityFeaturePipeline
+from feature_pipeline import (
+    AirQualityFeaturePipeline,
+    FeaturePipelineError,
+)
 
 
-# ---------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------
+# =====================================================================
+# ENVIRONMENT
+# =====================================================================
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -49,11 +65,14 @@ load_dotenv(
 )
 
 
-# ---------------------------------------------------------------------
-# Hopsworks configuration
-# ---------------------------------------------------------------------
+# =====================================================================
+# HOPSWORKS CONFIGURATION
+# =====================================================================
 
 HOPSWORKS_HOST = "eu-west.cloud.hopsworks.ai"
+
+FEATURE_GROUP_NAME = "karachi_aqi_features"
+FEATURE_GROUP_VERSION = 6
 
 MODEL_NAMES = {
     "day1": "karachi_aqi_day1_xgboost",
@@ -62,9 +81,9 @@ MODEL_NAMES = {
 }
 
 
-# ---------------------------------------------------------------------
-# Hopsworks authentication
-# ---------------------------------------------------------------------
+# =====================================================================
+# HOPSWORKS AUTHENTICATION
+# =====================================================================
 
 def connect_to_hopsworks():
     """
@@ -78,7 +97,7 @@ def connect_to_hopsworks():
             "HOPSWORKS_API_KEY is not set."
         )
 
-    print("--- Connecting to Hopsworks ---")
+    print("\n--- Connecting to Hopsworks ---")
 
     project = hopsworks.login(
         api_key_value=api_key,
@@ -86,12 +105,151 @@ def connect_to_hopsworks():
         cert_folder=tempfile.gettempdir(),
     )
 
+    print("--- Hopsworks connection successful ---")
+
     return project
 
 
-# ---------------------------------------------------------------------
-# Model loading
-# ---------------------------------------------------------------------
+# =====================================================================
+# LOAD LATEST V6 FEATURE ROW
+# =====================================================================
+
+def get_latest_v6_row(
+    project,
+) -> pd.DataFrame:
+    """
+    Read the latest complete production feature row from v6.
+
+    This function is used when the feature pipeline reports that
+    no new hourly observations are available.
+
+    Returns
+    -------
+    pd.DataFrame
+        Exactly one latest v6 row.
+    """
+
+    print(
+        "\n--- Reading latest existing row from "
+        "Hopsworks v6 ---"
+    )
+
+    fs = project.get_feature_store()
+
+    feature_group = fs.get_feature_group(
+        name=FEATURE_GROUP_NAME,
+        version=FEATURE_GROUP_VERSION,
+    )
+
+    # -------------------------------------------------------------
+    # Read a sufficiently recent window.
+    #
+    # The production feature pipeline already guarantees that
+    # v6 contains the required historical context.
+    #
+    # 200 hours gives us enough room to find the latest row.
+    # -------------------------------------------------------------
+
+    now = pd.Timestamp.now(
+        tz="UTC"
+    )
+
+    start_time = (
+        now
+        - pd.Timedelta(hours=200)
+    )
+
+    try:
+
+        dataframe = feature_group.read(
+            start_time=start_time.to_pydatetime(),
+            end_time=now.to_pydatetime(),
+            dataframe_type="pandas",
+        )
+
+    except Exception as exc:
+
+        raise RuntimeError(
+            "Failed to read latest v6 feature row: "
+            f"{exc}"
+        ) from exc
+
+    if dataframe is None or dataframe.empty:
+
+        raise RuntimeError(
+            "Hopsworks v6 contains no recent feature rows."
+        )
+
+    if "timestamp" not in dataframe.columns:
+
+        raise RuntimeError(
+            "v6 data does not contain a timestamp column."
+        )
+
+    if "city" not in dataframe.columns:
+
+        raise RuntimeError(
+            "v6 data does not contain a city column."
+        )
+
+    # -------------------------------------------------------------
+    # Normalize timestamp.
+    # -------------------------------------------------------------
+
+    dataframe = dataframe.copy()
+
+    dataframe["timestamp"] = pd.to_datetime(
+        dataframe["timestamp"],
+        unit="ms",
+        utc=True,
+        errors="coerce",
+    )
+
+    dataframe = dataframe.dropna(
+        subset=["timestamp"]
+    )
+
+    # -------------------------------------------------------------
+    # Karachi only.
+    # -------------------------------------------------------------
+
+    dataframe = dataframe[
+        dataframe["city"].astype(str).str.lower()
+        == "karachi"
+    ].copy()
+
+    if dataframe.empty:
+
+        raise RuntimeError(
+            "No Karachi rows found in v6."
+        )
+
+    # -------------------------------------------------------------
+    # Sort and select the latest row.
+    # -------------------------------------------------------------
+
+    dataframe = (
+        dataframe
+        .sort_values("timestamp")
+        .reset_index(drop=True)
+    )
+
+    latest_row = dataframe.iloc[
+        [-1]
+    ].copy()
+
+    print(
+        "Latest existing v6 timestamp:",
+        latest_row["timestamp"].iloc[0],
+    )
+
+    return latest_row
+
+
+# =====================================================================
+# LOAD REGISTERED MODEL
+# =====================================================================
+
 
 def load_registered_model(
     registry,
@@ -100,9 +258,20 @@ def load_registered_model(
     """
     Load the latest version of a registered model.
 
-    Returns:
-        model,
-        metadata
+    The Hopsworks model bundle may contain multiple .pkl files,
+    for example:
+
+        model_metadata.pkl
+        *_features_v6.pkl
+        *_ridge_v6.pkl
+
+    Only the actual trained model artifact must be loaded.
+
+    Returns
+    -------
+    model
+    metadata
+    version
     """
 
     print(
@@ -110,12 +279,23 @@ def load_registered_model(
         f"{model_name} ---"
     )
 
-    models = registry.get_models(model_name)
+    # -------------------------------------------------------------
+    # 1. Get registered model versions.
+    # -------------------------------------------------------------
+
+    models = registry.get_models(
+        model_name
+    )
 
     if not models:
         raise RuntimeError(
-            f"No registered versions found for {model_name}"
+            f"No registered versions found for "
+            f"{model_name}"
         )
+
+    # -------------------------------------------------------------
+    # 2. Select latest registered version.
+    # -------------------------------------------------------------
 
     latest_model = max(
         models,
@@ -127,15 +307,32 @@ def load_registered_model(
         f"version {latest_model.version}"
     )
 
+    # -------------------------------------------------------------
+    # 3. Download model bundle.
+    # -------------------------------------------------------------
+
     model_directory = latest_model.download()
 
-    model_directory = Path(model_directory)
+    model_directory = Path(
+        model_directory
+    )
+
+    print(
+        "Downloaded model directory:",
+        model_directory,
+    )
+
+    # -------------------------------------------------------------
+    # 4. Load metadata.
+    # -------------------------------------------------------------
 
     metadata_path = (
-        model_directory / "model_metadata.pkl"
+        model_directory
+        / "model_metadata.pkl"
     )
 
     if not metadata_path.exists():
+
         raise RuntimeError(
             f"model_metadata.pkl not found for "
             f"{model_name}: {metadata_path}"
@@ -145,42 +342,169 @@ def load_registered_model(
         metadata_path
     )
 
-    artifact_path = (
-        model_directory
-        / f"{metadata['model_name']}.pkl"
+    if not isinstance(metadata, dict):
+
+        raise RuntimeError(
+            f"Invalid model metadata for "
+            f"{model_name}. Expected dict, "
+            f"found {type(metadata).__name__}."
+        )
+
+    # -------------------------------------------------------------
+    # 5. Determine the actual trained model artifact.
+    #
+    # IMPORTANT:
+    #
+    # The registry bundle can contain auxiliary .pkl files.
+    #
+    # Example Day +2:
+    #
+    #   karachi_aqi_day2_features_v6.pkl
+    #   karachi_aqi_day2_ridge_v6.pkl
+    #
+    # We must NOT simply choose any .pkl file.
+    # -------------------------------------------------------------
+
+    expected_model_name = metadata.get(
+        "model_name"
     )
 
-    if not artifact_path.exists():
-        # Fallback: locate the PKL artifact in the bundle.
-        candidates = list(
-            model_directory.glob("*.pkl")
+    if not expected_model_name:
+
+        raise RuntimeError(
+            f"model_metadata.pkl for {model_name} "
+            "does not contain 'model_name'."
         )
+
+    # -------------------------------------------------------------
+    # First choice:
+    #
+    # Exact metadata-defined artifact.
+    # -------------------------------------------------------------
+
+    artifact_path = (
+        model_directory
+        / f"{expected_model_name}.pkl"
+    )
+
+    if artifact_path.exists():
+
+        print(
+            "Selected model artifact:",
+            artifact_path.name,
+        )
+
+    else:
+
+        # ---------------------------------------------------------
+        # 6. Fallback discovery.
+        #
+        # Ignore:
+        #   model_metadata.pkl
+        #   feature-selection artifacts
+        #   feature metadata artifacts
+        #
+        # Prefer filenames containing the registered model name.
+        # ---------------------------------------------------------
 
         candidates = [
             path
-            for path in candidates
+            for path in model_directory.glob("*.pkl")
             if path.name != "model_metadata.pkl"
         ]
 
-        if len(candidates) != 1:
-            raise RuntimeError(
-                f"Could not uniquely identify model "
-                f"artifact for {model_name}. "
-                f"Found: {candidates}"
+        model_candidates = [
+            path
+            for path in candidates
+            if model_name.lower() in path.stem.lower()
+            and "feature" not in path.stem.lower()
+            and "features" not in path.stem.lower()
+            and "metadata" not in path.stem.lower()
+        ]
+
+        # ---------------------------------------------------------
+        # Exactly one matching model artifact.
+        # ---------------------------------------------------------
+
+        if len(model_candidates) == 1:
+
+            artifact_path = model_candidates[0]
+
+            print(
+                "Selected model artifact:",
+                artifact_path.name,
             )
 
-        artifact_path = candidates[0]
+        # ---------------------------------------------------------
+        # Multiple possible model artifacts.
+        # ---------------------------------------------------------
 
-    model = joblib.load(
-        artifact_path
+        elif len(model_candidates) > 1:
+
+            raise RuntimeError(
+                f"Multiple possible trained model artifacts "
+                f"found for {model_name}: "
+                f"{model_candidates}"
+            )
+
+        # ---------------------------------------------------------
+        # No model artifact found.
+        # ---------------------------------------------------------
+
+        else:
+
+            raise RuntimeError(
+                f"Could not identify trained model artifact "
+                f"for {model_name}.\n"
+                f"Expected: {expected_model_name}.pkl\n"
+                f"Available artifacts: {candidates}"
+            )
+
+    # -------------------------------------------------------------
+    # 7. Load ONLY the selected trained model.
+    # -------------------------------------------------------------
+
+    try:
+
+        model = joblib.load(
+            artifact_path
+        )
+
+    except Exception as exc:
+
+        raise RuntimeError(
+            f"Failed to load trained model artifact "
+            f"{artifact_path}: {exc}"
+        ) from exc
+
+    # -------------------------------------------------------------
+    # 8. Final sanity check.
+    #
+    # A trained sklearn/XGBoost model should expose predict().
+    # -------------------------------------------------------------
+
+    if not hasattr(model, "predict"):
+
+        raise RuntimeError(
+            f"Selected artifact does not appear to be a "
+            f"trained prediction model: "
+            f"{artifact_path.name}"
+        )
+
+    print(
+        "Trained model loaded successfully."
     )
 
-    return model, metadata, latest_model.version
+    return (
+        model,
+        metadata,
+        latest_model.version,
+    )
 
 
-# ---------------------------------------------------------------------
-# Validate model metadata
-# ---------------------------------------------------------------------
+# =====================================================================
+# VALIDATE MODEL METADATA
+# =====================================================================
 
 def validate_model_metadata(
     metadata: dict,
@@ -190,28 +514,56 @@ def validate_model_metadata(
     Validate the registered model's production contract.
     """
 
-    if metadata.get("model_name") != expected_model_name:
+    # -------------------------------------------------------------
+    # Model name.
+    # -------------------------------------------------------------
+
+    registered_model_name = metadata.get(
+        "model_name"
+    )
+
+    if registered_model_name != expected_model_name:
+
         raise RuntimeError(
             "Registered model metadata mismatch: "
             f"expected {expected_model_name}, "
-            f"found {metadata.get('model_name')}"
+            f"found {registered_model_name}"
         )
+
+    # -------------------------------------------------------------
+    # Canonical feature count.
+    # -------------------------------------------------------------
 
     canonical_count = metadata.get(
         "canonical_feature_count"
     )
 
     if canonical_count != 100:
+
         raise RuntimeError(
             "Expected 100 canonical features, "
             f"found {canonical_count}"
         )
 
+    # -------------------------------------------------------------
+    # Canonical feature contract.
+    # -------------------------------------------------------------
+
     canonical_features = metadata.get(
         "canonical_model_features"
     )
 
-    if canonical_features != list(MODEL_FEATURES):
+    if canonical_features is None:
+
+        raise RuntimeError(
+            "Registered model metadata does not "
+            "contain canonical_model_features."
+        )
+
+    if list(canonical_features) != list(
+        MODEL_FEATURES
+    ):
+
         raise RuntimeError(
             "Registered model canonical feature "
             "contract does not match the current "
@@ -219,9 +571,9 @@ def validate_model_metadata(
         )
 
 
-# ---------------------------------------------------------------------
-# Prepare model input
-# ---------------------------------------------------------------------
+# =====================================================================
+# PREPARE MODEL INPUT
+# =====================================================================
 
 def prepare_model_input(
     feature_row: pd.DataFrame,
@@ -242,14 +594,30 @@ def prepare_model_input(
         MODEL_FEATURES
     )
 
+    # -------------------------------------------------------------
+    # Use selected features when the model stores them.
+    #
+    # Day +2 and Day +3 use their final selected 60 features.
+    # Day +1 uses the canonical 100 features.
+    # -------------------------------------------------------------
+
     selected_features = metadata.get(
         "selected_features"
     )
 
     if selected_features:
-        feature_columns = selected_features
+
+        feature_columns = list(
+            selected_features
+        )
+
     else:
+
         feature_columns = canonical_features
+
+    # -------------------------------------------------------------
+    # Verify every required feature exists.
+    # -------------------------------------------------------------
 
     missing = [
         column
@@ -258,26 +626,155 @@ def prepare_model_input(
     ]
 
     if missing:
+
         raise RuntimeError(
             "Production feature row is missing "
             f"required model features: {missing}"
         )
 
+    # -------------------------------------------------------------
+    # Preserve exact feature order.
+    # -------------------------------------------------------------
+
     X = feature_row[
         feature_columns
     ].copy()
 
+    # -------------------------------------------------------------
+    # NaN protection.
+    # -------------------------------------------------------------
+
     if X.isna().any().any():
+
         raise RuntimeError(
             "Model input contains NaN values."
+        )
+
+    # -------------------------------------------------------------
+    # Exactly one prediction row.
+    # -------------------------------------------------------------
+
+    if len(X) != 1:
+
+        raise RuntimeError(
+            "Inference expects exactly one feature row, "
+            f"received {len(X)}."
         )
 
     return X
 
 
-# ---------------------------------------------------------------------
-# Prediction
-# ---------------------------------------------------------------------
+# =====================================================================
+# GET PRODUCTION FEATURE ROW
+# =====================================================================
+
+def get_production_feature_row(
+    feature_pipeline: AirQualityFeaturePipeline,
+) -> pd.DataFrame:
+    """
+    Run the production feature pipeline.
+
+    Behavior
+    --------
+    If new observations exist:
+        They are written to v6 and the latest generated row
+        is returned.
+
+    If v6 is already up to date:
+        The latest existing v6 row is loaded and returned.
+
+    This guarantees that inference always receives exactly
+    one latest production feature row.
+    """
+
+    print(
+        "\n--- Running production feature pipeline ---"
+    )
+
+    # -------------------------------------------------------------
+    # IMPORTANT:
+    #
+    # Production inference must allow the feature pipeline
+    # to write genuinely new rows into v6.
+    # -------------------------------------------------------------
+
+    generated_rows = feature_pipeline.run(
+        write_to_feature_store=True
+    )
+
+    # -------------------------------------------------------------
+    # Case 1:
+    #
+    # New rows were generated and written.
+    # -------------------------------------------------------------
+
+    if generated_rows is not None and not generated_rows.empty:
+
+        print(
+            "\nNew production rows generated:",
+            len(generated_rows),
+        )
+
+        # ---------------------------------------------------------
+        # IMPORTANT:
+        #
+        # Multiple missed hours may have been caught up.
+        # We must use the LATEST row, not iloc[0].
+        # ---------------------------------------------------------
+
+        generated_rows = (
+            generated_rows
+            .sort_values("timestamp")
+            .reset_index(drop=True)
+        )
+
+        latest_row = generated_rows.iloc[
+            [-1]
+        ].copy()
+
+        print(
+            "Latest generated timestamp:",
+            latest_row["timestamp"].iloc[0],
+        )
+
+        return latest_row
+
+    # -------------------------------------------------------------
+    # Case 2:
+    #
+    # v6 is already up to date.
+    #
+    # feature_pipeline.run() intentionally returns an empty
+    # DataFrame in this situation.
+    # -------------------------------------------------------------
+
+    print(
+        "\nFeature pipeline reports that v6 is already up to date."
+    )
+
+    print(
+        "Reading the latest existing v6 row for inference..."
+    )
+
+    project = connect_to_hopsworks()
+
+    try:
+
+        latest_row = get_latest_v6_row(
+            project
+        )
+
+    finally:
+
+        # Hopsworks handles cleanup through its client lifecycle.
+        pass
+
+    return latest_row
+
+
+# =====================================================================
+# MAIN PREDICTION FUNCTION
+# =====================================================================
 
 def predict():
     """
@@ -295,12 +792,8 @@ def predict():
     )
 
     # -------------------------------------------------------------
-    # 1. Run the finalized live feature pipeline
+    # 1. Create production feature pipeline.
     # -------------------------------------------------------------
-
-    print(
-        "\n--- Running production feature pipeline ---"
-    )
 
     feature_pipeline = (
         AirQualityFeaturePipeline(
@@ -308,13 +801,73 @@ def predict():
         )
     )
 
-    feature_row = feature_pipeline.run(
-        write_to_feature_store=False
+    # -------------------------------------------------------------
+    # 2. Generate/update production features.
+    #
+    # This returns exactly ONE latest row for inference.
+    # -------------------------------------------------------------
+
+    feature_row = (
+        get_production_feature_row(
+            feature_pipeline
+        )
+    )
+
+    # -------------------------------------------------------------
+    # 3. Final feature-row validation.
+    # -------------------------------------------------------------
+
+    if feature_row is None or feature_row.empty:
+
+        raise FeaturePipelineError(
+            "No production feature row is available "
+            "for inference."
+        )
+
+    if len(feature_row) != 1:
+
+        raise FeaturePipelineError(
+            "Inference requires exactly one latest "
+            f"feature row, received {len(feature_row)}."
+        )
+
+    # -------------------------------------------------------------
+    # Ensure all canonical features exist.
+    # -------------------------------------------------------------
+
+    missing_canonical = [
+        column
+        for column in MODEL_FEATURES
+        if column not in feature_row.columns
+    ]
+
+    if missing_canonical:
+
+        raise FeaturePipelineError(
+            "Latest production row is missing canonical "
+            f"MODEL_FEATURES: {missing_canonical}"
+        )
+
+    # -------------------------------------------------------------
+    # Ensure no NaN in canonical features.
+    # -------------------------------------------------------------
+
+    if feature_row[
+        list(MODEL_FEATURES)
+    ].isna().any().any():
+
+        raise FeaturePipelineError(
+            "Latest production feature row contains "
+            "NaN values in MODEL_FEATURES."
+        )
+
+    latest_timestamp = (
+        feature_row["timestamp"].iloc[0]
     )
 
     print(
         "\nLatest production timestamp:",
-        feature_row["timestamp"].iloc[0],
+        latest_timestamp,
     )
 
     print(
@@ -322,8 +875,12 @@ def predict():
         len(MODEL_FEATURES),
     )
 
+    print(
+        "Production feature validation: PASSED"
+    )
+
     # -------------------------------------------------------------
-    # 2. Connect to Model Registry
+    # 4. Connect to Model Registry.
     # -------------------------------------------------------------
 
     project = connect_to_hopsworks()
@@ -333,14 +890,16 @@ def predict():
     )
 
     # -------------------------------------------------------------
-    # 3. Load Day +1 model
+    # 5. Load Day +1 model.
     # -------------------------------------------------------------
 
-    day1_model, day1_metadata, day1_version = (
-        load_registered_model(
-            registry,
-            MODEL_NAMES["day1"],
-        )
+    (
+        day1_model,
+        day1_metadata,
+        day1_version,
+    ) = load_registered_model(
+        registry,
+        MODEL_NAMES["day1"],
     )
 
     validate_model_metadata(
@@ -354,18 +913,22 @@ def predict():
     )
 
     day1_prediction = float(
-        day1_model.predict(X_day1)[0]
+        day1_model.predict(
+            X_day1
+        )[0]
     )
 
     # -------------------------------------------------------------
-    # 4. Load Day +2 model
+    # 6. Load Day +2 model.
     # -------------------------------------------------------------
 
-    day2_model, day2_metadata, day2_version = (
-        load_registered_model(
-            registry,
-            MODEL_NAMES["day2"],
-        )
+    (
+        day2_model,
+        day2_metadata,
+        day2_version,
+    ) = load_registered_model(
+        registry,
+        MODEL_NAMES["day2"],
     )
 
     validate_model_metadata(
@@ -379,18 +942,22 @@ def predict():
     )
 
     day2_prediction = float(
-        day2_model.predict(X_day2)[0]
+        day2_model.predict(
+            X_day2
+        )[0]
     )
 
     # -------------------------------------------------------------
-    # 5. Load Day +3 model
+    # 7. Load Day +3 model.
     # -------------------------------------------------------------
 
-    day3_model, day3_metadata, day3_version = (
-        load_registered_model(
-            registry,
-            MODEL_NAMES["day3"],
-        )
+    (
+        day3_model,
+        day3_metadata,
+        day3_version,
+    ) = load_registered_model(
+        registry,
+        MODEL_NAMES["day3"],
     )
 
     validate_model_metadata(
@@ -404,11 +971,13 @@ def predict():
     )
 
     day3_prediction = float(
-        day3_model.predict(X_day3)[0]
+        day3_model.predict(
+            X_day3
+        )[0]
     )
 
     # -------------------------------------------------------------
-    # 6. Results
+    # 8. Results.
     # -------------------------------------------------------------
 
     print(
@@ -422,19 +991,27 @@ def predict():
     )
 
     print(
-        f"Day +1 ({MODEL_NAMES['day1']} "
+        f"Prediction base timestamp: "
+        f"{latest_timestamp}"
+    )
+
+    print(
+        f"Day +1 "
+        f"({MODEL_NAMES['day1']} "
         f"v{day1_version}): "
         f"{day1_prediction:.2f}"
     )
 
     print(
-        f"Day +2 ({MODEL_NAMES['day2']} "
+        f"Day +2 "
+        f"({MODEL_NAMES['day2']} "
         f"v{day2_version}): "
         f"{day2_prediction:.2f}"
     )
 
     print(
-        f"Day +3 ({MODEL_NAMES['day3']} "
+        f"Day +3 "
+        f"({MODEL_NAMES['day3']} "
         f"v{day3_version}): "
         f"{day3_prediction:.2f}"
     )
@@ -450,9 +1027,7 @@ def predict():
     )
 
     return {
-        "timestamp": feature_row[
-            "timestamp"
-        ].iloc[0],
+        "timestamp": latest_timestamp,
         "day1": day1_prediction,
         "day2": day2_prediction,
         "day3": day3_prediction,
@@ -462,9 +1037,38 @@ def predict():
     }
 
 
-# ---------------------------------------------------------------------
-# Standalone execution
-# ---------------------------------------------------------------------
+# =====================================================================
+# STANDALONE EXECUTION
+# =====================================================================
 
 if __name__ == "__main__":
-    predict()
+
+    try:
+
+        result = predict()
+
+        print(
+            "\nReturned prediction result:"
+        )
+
+        print(result)
+
+    except Exception as exc:
+
+        print(
+            "\n=============================================="
+        )
+
+        print(
+            " PRODUCTION INFERENCE FAILED"
+        )
+
+        print(
+            "=============================================="
+        )
+
+        print(
+            f"\nError: {exc}"
+        )
+
+        raise
