@@ -1,26 +1,45 @@
+
 """
-Production feature pipeline for the Karachi AQI Predictor.
+Production feature pipeline for the Karachi AQI Predictor — v6.
 
-Production flow:
+Purpose
+-------
+Run the production feature update safely and repeatedly.
 
-    Open-Meteo historical data
-        ↓
-    Canonical raw dataframe
-        ↓
-    shared build_rich_features()
-        ↓
-    100 MODEL_FEATURES
-        ↓
-    latest complete feature row
-        ↓
-    Hopsworks Feature Store
+Production architecture:
 
-Important:
-    This file is an orchestration layer only.
+    Hopsworks v6 historical computed rows
+                    +
+          Open-Meteo recent raw observations
+                    ↓
+          reconstruct raw context
+                    ↓
+          shared build_rich_features()
+                    ↓
+          generate missing production rows
+                    ↓
+             100 MODEL_FEATURES
+                    ↓
+             Hopsworks v6
 
-    All feature engineering must remain inside
-    src/feature_engineering.py so that training and
-    production use exactly the same feature definitions.
+Production guarantees
+---------------------
+1. v6 remains the canonical production Feature Group.
+2. MODEL_FEATURES are never redefined here.
+3. Historical raw context is reconstructed from v6.
+4. Open-Meteo supplies recent raw observations.
+5. The pipeline does not depend on a hardcoded calendar date/time.
+6. Historical context is anchored to the latest timestamp in v6.
+7. Missed hourly observations can be caught up.
+8. Existing timestamps are never intentionally inserted again.
+9. Duplicate timestamps are rejected.
+10. The shared feature_engineering.py remains the single source
+    of truth for feature calculations.
+11. The pipeline is safe to execute repeatedly.
+12. Production writes are enabled by default.
+13. Dry-run mode is available explicitly.
+14. A gap in the historical source data is never silently filled.
+15. Only complete feature rows are allowed into v6.
 """
 
 from __future__ import annotations
@@ -29,7 +48,6 @@ import logging
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import hopsworks
 import pandas as pd
@@ -45,16 +63,16 @@ from feature_engineering import (
 )
 
 
-# ---------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------
+# =====================================================================
+# ENVIRONMENT
+# =====================================================================
 
 load_dotenv()
 
 
-# ---------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------
+# =====================================================================
+# LOGGING
+# =====================================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,75 +82,131 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------
-# Karachi configuration
-# ---------------------------------------------------------------------
+# =====================================================================
+# KARACHI CONFIGURATION
+# =====================================================================
+
+CITY = "karachi"
 
 KARACHI_LATITUDE = 24.8607
 KARACHI_LONGITUDE = 67.0011
 
-CITY = "karachi"
+
+# =====================================================================
+# OPEN-METEO CONFIGURATION
+# =====================================================================
 
 AIR_QUALITY_URL = (
     "https://air-quality-api.open-meteo.com/v1/air-quality"
 )
 
 WEATHER_URL = (
-    "https://archive-api.open-meteo.com/v1/archive"
+    "https://api.open-meteo.com/v1/forecast"
 )
 
+REQUEST_TIMEOUT = 60
 
-# ---------------------------------------------------------------------
-# Hopsworks configuration
-# ---------------------------------------------------------------------
+
+# =====================================================================
+# HOPSWORKS CONFIGURATION
+# =====================================================================
 
 HOPSWORKS_HOST = "eu-west.cloud.hopsworks.ai"
 
 FEATURE_GROUP_NAME = "karachi_aqi_features"
 FEATURE_GROUP_VERSION = 6
 
-PRIMARY_KEY = ["city", "timestamp"]
+PRIMARY_KEY = [
+    "city",
+    "timestamp",
+]
+
+
+# =====================================================================
+# PRODUCTION CONTEXT
+# =====================================================================
+
+# The feature engineering contract requires up to 168 hours of
+# historical context.
+#
+# Extra rows provide a safety margin.
+
+CONTEXT_BUFFER_HOURS = 8
+
+REQUIRED_CONTEXT_ROWS = (
+    MAX_LOOKBACK_HOURS + CONTEXT_BUFFER_HOURS
+)
 
 
 # ---------------------------------------------------------------------
-# Production lookback
+# API FETCH WINDOW
 # ---------------------------------------------------------------------
-
-# The canonical feature engineering currently needs up to 168 hours.
 #
-# We intentionally request more than the absolute minimum so that:
+# This is NOT a production schedule and NOT a hardcoded date/time.
 #
-#     168 hours
-#          +
-#     warm-up / boundary safety
+# It only tells Open-Meteo how much recent data to request.
 #
-# gives us a reliable latest complete row.
+# The value is deliberately larger than the minimum feature
+# lookback so normal missed hourly executions can be recovered.
 #
-# The compatibility test successfully used 200 hours.
+# If a deployment is offline longer than this window, the pipeline
+# fails safely rather than silently producing incomplete history.
+#
 
-LOOKBACK_HOURS = 200
+API_RECENT_HOURS = (
+    MAX_LOOKBACK_HOURS
+    + CONTEXT_BUFFER_HOURS
+    + 24
+)
 
 
-# ---------------------------------------------------------------------
-# HTTP configuration
-# ---------------------------------------------------------------------
+# =====================================================================
+# RAW SOURCE COLUMNS
+# =====================================================================
 
-REQUEST_TIMEOUT = 60
+RAW_SOURCE_COLUMNS = (
+    "timestamp",
+    "pm25",
+    "pm10",
+    "ozone",
+    "nitrogen_dioxide",
+    "sulphur_dioxide",
+    "carbon_monoxide",
+    "temperature",
+    "humidity",
+    "target_aqi",
+)
 
-MAX_WEATHER_RETRIES = 3
+
+# =====================================================================
+# EXCEPTION
+# =====================================================================
 
 
 class FeaturePipelineError(RuntimeError):
     """Raised when production feature generation fails."""
 
 
+# =====================================================================
+# PIPELINE
+# =====================================================================
+
+
 class AirQualityFeaturePipeline:
     """
-    Production orchestrator for Karachi AQI feature generation.
+    Production hourly feature update pipeline.
 
-    This class deliberately does NOT implement feature engineering
-    itself. It delegates that responsibility to build_rich_features()
-    from feature_engineering.py.
+    Hopsworks v6:
+        Canonical historical computed feature store.
+
+    Open-Meteo:
+        Recent raw observations.
+
+    feature_engineering.py:
+        Single source of truth for feature calculations.
+
+    Output:
+        One or more newly generated production rows.
     """
 
     def __init__(
@@ -140,683 +214,22 @@ class AirQualityFeaturePipeline:
         city: str = CITY,
         latitude: float = KARACHI_LATITUDE,
         longitude: float = KARACHI_LONGITUDE,
-        lookback_hours: int = LOOKBACK_HOURS,
     ) -> None:
 
         self.city = city
         self.latitude = latitude
         self.longitude = longitude
-        self.lookback_hours = max(
-            lookback_hours,
-            MAX_LOOKBACK_HOURS + 1,
-        )
 
         logger.info(
-            "Initialized AirQualityFeaturePipeline "
-            "for city=%s, lookback=%s hours",
-            self.city,
-            self.lookback_hours,
-        )
-
-    # -----------------------------------------------------------------
-    # 1. Build historical request window
-    # -----------------------------------------------------------------
-
-    def _get_request_window(self) -> tuple[str, str]:
-        """
-        Return UTC start/end dates for the Open-Meteo requests.
-
-        Open-Meteo archive endpoints operate using calendar dates,
-        while our canonical feature engineering operates on hourly
-        UTC timestamps.
-        """
-
-        end = datetime.now(timezone.utc)
-
-        start = end - timedelta(
-            hours=self.lookback_hours
-        )
-
-        start_date = start.strftime("%Y-%m-%d")
-        end_date = end.strftime("%Y-%m-%d")
-
-        return start_date, end_date
-
-    # -----------------------------------------------------------------
-    # 2. Fetch Air Quality
-    # -----------------------------------------------------------------
-
-    def fetch_air_quality(self) -> pd.DataFrame:
-        """
-        Fetch historical hourly air-quality observations.
-
-        Required production fields:
-
-            pm10
-            pm2_5
-            ozone
-            nitrogen_dioxide
-            sulphur_dioxide
-            carbon_monoxide
-            us_aqi
-        """
-
-        start_date, end_date = self._get_request_window()
-
-        params = {
-            "latitude": self.latitude,
-            "longitude": self.longitude,
-            "start_date": start_date,
-            "end_date": end_date,
-            "timezone": "UTC",
-            "hourly": [
-                "pm10",
-                "pm2_5",
-                "ozone",
-                "nitrogen_dioxide",
-                "sulphur_dioxide",
-                "carbon_monoxide",
-                "us_aqi",
-            ],
-        }
-
-        logger.info(
-            "Fetching historical air-quality data: "
-            "%s → %s",
-            start_date,
-            end_date,
-        )
-
-        try:
-            response = requests.get(
-                AIR_QUALITY_URL,
-                params=params,
-                timeout=REQUEST_TIMEOUT,
-            )
-
-            logger.info(
-                "Open-Meteo air-quality HTTP status: %s",
-                response.status_code,
-            )
-
-            response.raise_for_status()
-
-            payload = response.json()
-
-            hourly = payload.get("hourly")
-
-            if not hourly:
-                raise FeaturePipelineError(
-                    "Open-Meteo air-quality response "
-                    "does not contain an hourly block."
-                )
-
-            required_api_columns = [
-                "time",
-                "pm10",
-                "pm2_5",
-                "ozone",
-                "nitrogen_dioxide",
-                "sulphur_dioxide",
-                "carbon_monoxide",
-                "us_aqi",
-            ]
-
-            missing = [
-                column
-                for column in required_api_columns
-                if column not in hourly
-            ]
-
-            if missing:
-                raise FeaturePipelineError(
-                    "Air-quality response is missing fields: "
-                    + ", ".join(missing)
-                )
-
-            df = pd.DataFrame(hourly)
-
-            df["time"] = pd.to_datetime(
-                df["time"],
-                utc=True,
-                errors="coerce",
-            )
-
-            if df["time"].isna().any():
-                raise FeaturePipelineError(
-                    "Air-quality response contains invalid timestamps."
-                )
-
-            logger.info(
-                "Air-quality observations received: %s",
-                len(df),
-            )
-
-            return df
-
-        except requests.RequestException as exc:
-            raise FeaturePipelineError(
-                f"Air-quality API request failed: {exc}"
-            ) from exc
-
-    # -----------------------------------------------------------------
-    # 3. Fetch Weather
-    # -----------------------------------------------------------------
-
-    def fetch_weather(self) -> pd.DataFrame:
-        """
-        Fetch historical hourly temperature and humidity.
-        """
-
-        start_date, end_date = self._get_request_window()
-
-        params = {
-            "latitude": self.latitude,
-            "longitude": self.longitude,
-            "start_date": start_date,
-            "end_date": end_date,
-            "timezone": "UTC",
-            "hourly": [
-                "temperature_2m",
-                "relative_humidity_2m",
-            ],
-        }
-
-        logger.info(
-            "Fetching historical weather data: "
-            "%s → %s",
-            start_date,
-            end_date,
-        )
-
-        last_exception: Optional[Exception] = None
-
-        for attempt in range(1, MAX_WEATHER_RETRIES + 1):
-
-            try:
-
-                response = requests.get(
-                    WEATHER_URL,
-                    params=params,
-                    timeout=REQUEST_TIMEOUT,
-                )
-
-                logger.info(
-                    "Open-Meteo weather HTTP status: %s "
-                    "(attempt %s/%s)",
-                    response.status_code,
-                    attempt,
-                    MAX_WEATHER_RETRIES,
-                )
-
-                response.raise_for_status()
-
-                payload = response.json()
-
-                hourly = payload.get("hourly")
-
-                if not hourly:
-                    raise FeaturePipelineError(
-                        "Open-Meteo weather response "
-                        "does not contain an hourly block."
-                    )
-
-                required_api_columns = [
-                    "time",
-                    "temperature_2m",
-                    "relative_humidity_2m",
-                ]
-
-                missing = [
-                    column
-                    for column in required_api_columns
-                    if column not in hourly
-                ]
-
-                if missing:
-                    raise FeaturePipelineError(
-                        "Weather response is missing fields: "
-                        + ", ".join(missing)
-                    )
-
-                df = pd.DataFrame(hourly)
-
-                df["time"] = pd.to_datetime(
-                    df["time"],
-                    utc=True,
-                    errors="coerce",
-                )
-
-                if df["time"].isna().any():
-                    raise FeaturePipelineError(
-                        "Weather response contains invalid timestamps."
-                    )
-
-                logger.info(
-                    "Weather observations received: %s",
-                    len(df),
-                )
-
-                return df
-
-            except (
-                requests.RequestException,
-                FeaturePipelineError,
-            ) as exc:
-
-                last_exception = exc
-
-                logger.warning(
-                    "Weather request attempt %s failed: %s",
-                    attempt,
-                    exc,
-                )
-
-                if attempt < MAX_WEATHER_RETRIES:
-                    # Keep retry logic simple and dependency-free.
-                    import time
-
-                    time.sleep(5)
-
-        raise FeaturePipelineError(
-            "Weather API failed after "
-            f"{MAX_WEATHER_RETRIES} attempts: "
-            f"{last_exception}"
-        )
-
-    # -----------------------------------------------------------------
-    # 4. Build canonical raw dataframe
-    # -----------------------------------------------------------------
-
-    def build_raw_dataframe(
-        self,
-        air_quality: pd.DataFrame,
-        weather: pd.DataFrame,
-    ) -> pd.DataFrame:
-        """
-        Merge Open-Meteo air-quality and weather data and convert
-        them to the exact raw schema expected by feature_engineering.py.
-        """
-
-        logger.info(
-            "Combining air-quality and weather observations..."
-        )
-
-        aq = air_quality.copy()
-        wx = weather.copy()
-
-        df = aq.merge(
-            wx,
-            on="time",
-            how="inner",
-        )
-
-        if df.empty:
-            raise FeaturePipelineError(
-                "Air-quality and weather data have no "
-                "overlapping hourly timestamps."
-            )
-
-        # -------------------------------------------------------------
-        # Canonical raw schema
-        # -------------------------------------------------------------
-
-        df = df.rename(
-            columns={
-                "time": "timestamp",
-                "pm2_5": "pm25",
-                "temperature_2m": "temperature",
-                "relative_humidity_2m": "humidity",
-                "us_aqi": "target_aqi",
-            }
-        )
-
-        # Explicitly attach city only after feature engineering if
-        # desired. city is metadata, not a required raw feature.
-        df = df.sort_values(
-            "timestamp"
-        ).reset_index(drop=True)
-
-        logger.info(
-            "Merged raw dataframe shape: %s",
-            df.shape,
-        )
-
-        logger.info(
-            "Canonical raw columns: %s",
-            list(df.columns),
-        )
-
-        return df
-
-    # -----------------------------------------------------------------
-    # 5. Validate raw dataframe
-    # -----------------------------------------------------------------
-
-    def validate_raw_dataframe(
-        self,
-        df: pd.DataFrame,
-    ) -> None:
-        """
-        Validate the raw production dataframe before feature
-        engineering.
-
-        No artificial defaults or silent filling are performed here.
-        """
-
-        missing_columns = [
-            column
-            for column in REQUIRED_RAW_COLUMNS
-            if column not in df.columns
-        ]
-
-        if missing_columns:
-            raise FeaturePipelineError(
-                "Production raw dataframe is missing required columns: "
-                + ", ".join(missing_columns)
-            )
-
-        # -------------------------------------------------------------
-        # Timestamp validation
-        # -------------------------------------------------------------
-
-        timestamps = pd.to_datetime(
-            df["timestamp"],
-            utc=True,
-            errors="coerce",
-        )
-
-        if timestamps.isna().any():
-            raise FeaturePipelineError(
-                "Production raw dataframe contains invalid timestamps."
-            )
-
-        if timestamps.duplicated().any():
-            raise FeaturePipelineError(
-                "Production raw dataframe contains duplicate timestamps."
-            )
-
-        # -------------------------------------------------------------
-        # Sort
-        # -------------------------------------------------------------
-
-        df["timestamp"] = timestamps
-
-        df.sort_values(
-            "timestamp",
-            inplace=True,
-        )
-
-        df.reset_index(
-            drop=True,
-            inplace=True,
-        )
-
-        # -------------------------------------------------------------
-        # Numeric validation
-        # -------------------------------------------------------------
-
-        numeric_columns = [
-            column
-            for column in REQUIRED_RAW_COLUMNS
-            if column != "timestamp"
-        ]
-
-        for column in numeric_columns:
-
-            df[column] = pd.to_numeric(
-                df[column],
-                errors="coerce",
-            )
-
-        # -------------------------------------------------------------
-        # Missing-value validation
-        # -------------------------------------------------------------
-
-        missing_counts = df[
-            list(REQUIRED_RAW_COLUMNS)
-        ].isna().sum()
-
-        missing = missing_counts[
-            missing_counts > 0
-        ]
-
-        if not missing.empty:
-
-            details = ", ".join(
-                f"{column}={int(count)}"
-                for column, count in missing.items()
-            )
-
-            raise FeaturePipelineError(
-                "Production raw data contains missing values: "
-                + details
-            )
-
-        # -------------------------------------------------------------
-        # Hourly continuity
-        # -------------------------------------------------------------
-
-        intervals = (
-            df["timestamp"]
-            .diff()
-            .dropna()
-        )
-
-        if not intervals.empty:
-
-            continuous = intervals.eq(
-                pd.Timedelta(hours=1)
-            ).all()
-
-            if not continuous:
-                raise FeaturePipelineError(
-                    "Production raw data is not a continuous "
-                    "hourly time series."
-                )
-
-        # -------------------------------------------------------------
-        # Historical warm-up
-        # -------------------------------------------------------------
-
-        if len(df) <= MAX_LOOKBACK_HOURS:
-
-            raise FeaturePipelineError(
-                "Insufficient historical observations. "
-                f"Need more than {MAX_LOOKBACK_HOURS} rows, "
-                f"received {len(df)}."
-            )
-
-        logger.info(
-            "Raw-data validation passed: %s hourly observations.",
-            len(df),
-        )
-
-    # -----------------------------------------------------------------
-    # 6. Build canonical rich features
-    # -----------------------------------------------------------------
-
-    def build_production_features(
-        self,
-        raw_df: pd.DataFrame,
-    ) -> pd.DataFrame:
-        """
-        Apply the exact shared feature engineering used by training.
-        """
-
-        logger.info(
-            "Running shared build_rich_features()..."
-        )
-
-        features = build_rich_features(
-            raw_df
-        )
-
-        logger.info(
-            "Rich feature frame shape: %s",
-            features.shape,
-        )
-
-        if len(MODEL_FEATURES) != 100:
-            raise FeaturePipelineError(
-                "Canonical MODEL_FEATURES contract is not 100 features. "
-                f"Found {len(MODEL_FEATURES)}."
-            )
-
-        # -------------------------------------------------------------
-        # Remove warm-up rows.
-        #
-        # Historical lag/rolling features intentionally contain NaNs
-        # at the beginning of the time series.
-        # -------------------------------------------------------------
-
-        complete_features = features.dropna(
-            subset=list(MODEL_FEATURES)
-        ).copy()
-
-        if complete_features.empty:
-            raise FeaturePipelineError(
-                "No complete production feature row exists "
-                "after historical warm-up."
-            )
-
-        # -------------------------------------------------------------
-        # Select latest complete observation.
-        # -------------------------------------------------------------
-
-        latest = complete_features.iloc[
-            [-1]
-        ].copy()
-
-        # -------------------------------------------------------------
-        # Validate the exact canonical feature contract.
-        # -------------------------------------------------------------
-
-        validate_feature_frame(
-            latest,
-            require_complete=True,
-        )
-
-        logger.info(
-            "Canonical feature validation passed."
-        )
-
-        logger.info(
-            "Latest complete feature timestamp: %s",
-            latest["timestamp"].iloc[0],
-        )
-
-        # -------------------------------------------------------------
-        # Add production metadata.
-        # -------------------------------------------------------------
-
-        latest.insert(
-            0,
-            "city",
+            "Initialized production feature pipeline "
+            "for city=%s",
             self.city,
         )
 
-        return latest
 
-    # -----------------------------------------------------------------
-    # 7. Prepare Hopsworks row
-    # -----------------------------------------------------------------
-
-    def prepare_feature_store_row(
-        self,
-        latest_features: pd.DataFrame,
-    ) -> pd.DataFrame:
-        """
-        Prepare the exact production row for Hopsworks.
-
-        The Feature Store row contains:
-
-            city
-            timestamp
-            100 MODEL_FEATURES
-
-        target_aqi is intentionally not included in the serving
-        feature vector because it is a source/history variable,
-        not one of the model input columns.
-
-        The historical AQI information required by the model is
-        already represented through the canonical lag/rolling
-        MODEL_FEATURES.
-        """
-
-        required_columns = [
-            "city",
-            "timestamp",
-            *MODEL_FEATURES,
-        ]
-
-        missing = [
-            column
-            for column in required_columns
-            if column not in latest_features.columns
-        ]
-
-        if missing:
-            raise FeaturePipelineError(
-                "Cannot prepare Hopsworks row. Missing columns: "
-                + ", ".join(missing)
-            )
-
-        row = latest_features[
-            required_columns
-        ].copy()
-
-        # -------------------------------------------------------------
-        # Explicit timestamp representation
-        # -------------------------------------------------------------
-
-        row["timestamp"] = pd.to_datetime(
-            row["timestamp"],
-            utc=True,
-        )
-
-        # Hopsworks event time / primary key expects a stable
-        # integer timestamp in the same convention used by the
-        # existing project pipeline.
-        row["timestamp"] = (
-            row["timestamp"].astype("int64") // 10**6
-        )
-
-        # -------------------------------------------------------------
-        # Explicit numeric dtypes
-        # -------------------------------------------------------------
-
-        temporal_features = {
-            "hour",
-            "day",
-            "month",
-            "day_of_week",
-        }
-
-        for column in MODEL_FEATURES:
-
-            if column in temporal_features:
-
-                row[column] = row[column].astype(
-                    "int64"
-                )
-
-            else:
-
-                row[column] = row[column].astype(
-                    "float64"
-                )
-
-        logger.info(
-            "Prepared Hopsworks row with %s model features.",
-            len(MODEL_FEATURES),
-        )
-
-        return row
-
-    # -----------------------------------------------------------------
-    # 8. Connect to Hopsworks
-    # -----------------------------------------------------------------
+    # =================================================================
+    # 1. HOPSWORKS CONNECTION
+    # =================================================================
 
     def get_feature_store(self):
         """
@@ -833,36 +246,43 @@ class AirQualityFeaturePipeline:
             )
 
         logger.info(
-            "Authenticating with Hopsworks..."
+            "Connecting to Hopsworks..."
         )
 
-        project = hopsworks.login(
-            api_key_value=api_key,
-            host=HOPSWORKS_HOST,
-            cert_folder=tempfile.gettempdir(),
+        try:
+
+            project = hopsworks.login(
+                api_key_value=api_key,
+                host=HOPSWORKS_HOST,
+                cert_folder=tempfile.gettempdir(),
+            )
+
+        except Exception as exc:
+
+            raise FeaturePipelineError(
+                f"Hopsworks authentication failed: {exc}"
+            ) from exc
+
+        logger.info(
+            "Hopsworks authentication successful."
         )
 
         return project.get_feature_store()
 
-    # -----------------------------------------------------------------
-    # 9. Store latest production row
-    # -----------------------------------------------------------------
 
-    def save_to_feature_store(
+    # =================================================================
+    # 2. GET FEATURE GROUP
+    # =================================================================
+
+    def get_feature_group(
         self,
-        feature_row: pd.DataFrame,
-    ) -> bool:
+        fs,
+    ):
         """
-        Insert the latest canonical production feature row
-        into Hopsworks Feature Group v6.
+        Retrieve the existing canonical v6 Feature Group.
+
+        This pipeline never creates a new Feature Group.
         """
-
-        if feature_row.empty:
-            raise FeaturePipelineError(
-                "Cannot insert an empty feature row."
-            )
-
-        fs = self.get_feature_store()
 
         logger.info(
             "Accessing Feature Group %s v%s...",
@@ -870,130 +290,1520 @@ class AirQualityFeaturePipeline:
             FEATURE_GROUP_VERSION,
         )
 
-        feature_group = fs.get_or_create_feature_group(
-            name=FEATURE_GROUP_NAME,
-            version=FEATURE_GROUP_VERSION,
-            primary_key=PRIMARY_KEY,
-            event_time="timestamp",
-            online_enabled=True,
-            description=(
-                "Canonical 100-feature production feature group "
-                "for Karachi AQI prediction."
-            ),
+        try:
+
+            feature_group = fs.get_feature_group(
+                name=FEATURE_GROUP_NAME,
+                version=FEATURE_GROUP_VERSION,
+            )
+
+        except Exception as exc:
+
+            raise FeaturePipelineError(
+                f"Unable to access Feature Group "
+                f"{FEATURE_GROUP_NAME} v{FEATURE_GROUP_VERSION}: "
+                f"{exc}"
+            ) from exc
+
+        return feature_group
+
+
+    # =================================================================
+    # 3. NORMALIZE V6 TIMESTAMP
+    # =================================================================
+
+    @staticmethod
+    def normalize_v6_timestamp(
+        dataframe: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Convert the existing v6 timestamp representation into
+        timezone-aware UTC pandas timestamps.
+
+        v6 is expected to store timestamp as Unix milliseconds.
+        """
+
+        dataframe = dataframe.copy()
+
+        if "timestamp" not in dataframe.columns:
+
+            raise FeaturePipelineError(
+                "v6 data does not contain timestamp."
+            )
+
+        dataframe["timestamp"] = pd.to_datetime(
+            dataframe["timestamp"],
+            unit="ms",
+            utc=True,
+            errors="coerce",
+        )
+
+        if dataframe["timestamp"].isna().any():
+
+            raise FeaturePipelineError(
+                "v6 contains invalid timestamps."
+            )
+
+        return dataframe
+
+
+    # =================================================================
+    # 4. DISCOVER LATEST V6 TIMESTAMP
+    # =================================================================
+
+    def discover_latest_v6_timestamp(
+        self,
+        feature_group,
+    ) -> pd.Timestamp:
+        """
+        Discover the latest stored timestamp in v6.
+
+        IMPORTANT:
+
+        This method does NOT use a 96-hour wall-clock assumption.
+
+        It first asks Hopsworks for the latest available data.
+
+        If the Feature Store implementation returns a bounded recent
+        window, the method verifies that the returned data actually
+        contains a usable Karachi row.
+
+        The production pipeline therefore never assumes that the
+        latest v6 timestamp is equal to datetime.now().
+        """
+
+        logger.info(
+            "Discovering latest stored v6 timestamp..."
+        )
+
+        # -------------------------------------------------------------
+        # First attempt:
+        # Read the Feature Group without imposing a production
+        # calendar/date assumption.
+        #
+        # Hopsworks Feature Groups support read() for retrieving the
+        # stored data. This gives us the canonical latest timestamp.
+        # -------------------------------------------------------------
+
+        try:
+
+            data = feature_group.read(
+                dataframe_type="pandas",
+            )
+
+        except Exception as exc:
+
+            raise FeaturePipelineError(
+                "Failed to discover latest timestamp from v6: "
+                f"{exc}"
+            ) from exc
+
+        if data is None or data.empty:
+
+            raise FeaturePipelineError(
+                "v6 Feature Group contains no rows."
+            )
+
+        data = self.normalize_v6_timestamp(
+            data
+        )
+
+        if "city" not in data.columns:
+
+            raise FeaturePipelineError(
+                "v6 data does not contain city."
+            )
+
+        data = data[
+            data["city"].astype(str).str.lower()
+            == self.city.lower()
+        ].copy()
+
+        if data.empty:
+
+            raise FeaturePipelineError(
+                f"No v6 rows found for city={self.city}."
+            )
+
+        latest_timestamp = (
+            data["timestamp"].max()
         )
 
         logger.info(
-            "Inserting latest production feature row..."
+            "Latest stored v6 timestamp: %s",
+            latest_timestamp,
         )
 
-        feature_group.insert(
-            feature_row,
-            write_options={
-                "wait_for_job": True,
-            },
+        return latest_timestamp
+
+
+    # =================================================================
+    # 5. READ RECENT V6 CONTEXT
+    # =================================================================
+
+    def read_recent_v6_context(
+        self,
+        feature_group,
+        latest_timestamp: pd.Timestamp,
+    ) -> pd.DataFrame:
+        """
+        Read enough v6 rows ending at the latest stored timestamp.
+
+        The window is anchored to v6 itself rather than datetime.now().
+        """
+
+        context_start = (
+            latest_timestamp
+            - timedelta(
+                hours=REQUIRED_CONTEXT_ROWS
+            )
+        )
+
+        context_end = (
+            latest_timestamp
+            + timedelta(hours=1)
         )
 
         logger.info(
-            "Successfully inserted production feature row "
-            "into Hopsworks."
+            "Reading v6 historical context..."
         )
 
-        return True
+        logger.info(
+            "    start = %s",
+            context_start.isoformat(),
+        )
 
-    # -----------------------------------------------------------------
-    # 10. Complete pipeline
-    # -----------------------------------------------------------------
+        logger.info(
+            "    end   = %s",
+            context_end.isoformat(),
+        )
+
+        try:
+
+            history = feature_group.read(
+                start_time=context_start,
+                end_time=context_end,
+                dataframe_type="pandas",
+            )
+
+        except Exception as exc:
+
+            raise FeaturePipelineError(
+                "Failed to read v6 historical context: "
+                f"{exc}"
+            ) from exc
+
+        if history is None or history.empty:
+
+            raise FeaturePipelineError(
+                "v6 returned no historical context."
+            )
+
+        logger.info(
+            "Historical rows retrieved from v6: %s",
+            len(history),
+        )
+
+        return history
+
+
+    # =================================================================
+    # 6. VALIDATE V6 CONTEXT
+    # =================================================================
+
+    def validate_historical_context(
+        self,
+        history: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Validate v6 context and reconstruct the raw source columns
+        required by build_rich_features().
+        """
+
+        required_columns = [
+            "city",
+            "timestamp",
+            "target_aqi",
+            *MODEL_FEATURES,
+        ]
+
+        missing = [
+            column
+            for column in required_columns
+            if column not in history.columns
+        ]
+
+        if missing:
+
+            raise FeaturePipelineError(
+                "Hopsworks v6 is missing required columns: "
+                + ", ".join(missing)
+            )
+
+        history = self.normalize_v6_timestamp(
+            history
+        )
+
+        history = history[
+            history["city"].astype(str).str.lower()
+            == self.city.lower()
+        ].copy()
+
+        if history.empty:
+
+            raise FeaturePipelineError(
+                f"No v6 rows found for city={self.city}."
+            )
+
+        history = (
+            history
+            .sort_values("timestamp")
+            .reset_index(drop=True)
+        )
+
+        # -------------------------------------------------------------
+        # Duplicate timestamps are never silently resolved.
+        # -------------------------------------------------------------
+
+        duplicates = history[
+            history["timestamp"].duplicated(
+                keep=False
+            )
+        ]
+
+        if not duplicates.empty:
+
+            duplicate_values = (
+                duplicates["timestamp"]
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+
+            raise FeaturePipelineError(
+                "Duplicate timestamps detected in v6 context: "
+                + ", ".join(duplicate_values)
+            )
+
+        # -------------------------------------------------------------
+        # Reconstruct canonical raw history.
+        # -------------------------------------------------------------
+
+        raw_history = history[
+            [
+                "timestamp",
+                "pm25",
+                "pm10",
+                "ozone",
+                "nitrogen_dioxide",
+                "sulphur_dioxide",
+                "carbon_monoxide",
+                "temperature",
+                "humidity",
+                "target_aqi",
+            ]
+        ].copy()
+
+        # -------------------------------------------------------------
+        # Numeric normalization.
+        # -------------------------------------------------------------
+
+        for column in REQUIRED_RAW_COLUMNS:
+
+            if column == "timestamp":
+                continue
+
+            raw_history[column] = pd.to_numeric(
+                raw_history[column],
+                errors="coerce",
+            ).astype("float64")
+
+        # -------------------------------------------------------------
+        # Missing values.
+        # -------------------------------------------------------------
+
+        missing_counts = (
+            raw_history[
+                list(REQUIRED_RAW_COLUMNS)
+            ]
+            .isna()
+            .sum()
+        )
+
+        missing = missing_counts[
+            missing_counts > 0
+        ]
+
+        if not missing.empty:
+
+            details = ", ".join(
+                f"{column}={int(count)}"
+                for column, count in missing.items()
+            )
+
+            raise FeaturePipelineError(
+                "v6 source data contains missing values: "
+                + details
+            )
+
+        # -------------------------------------------------------------
+        # Hourly continuity.
+        # -------------------------------------------------------------
+
+        intervals = (
+            raw_history["timestamp"]
+            .diff()
+            .dropna()
+        )
+
+        invalid_intervals = intervals[
+            intervals
+            != pd.Timedelta(hours=1)
+        ]
+
+        if not invalid_intervals.empty:
+
+            raise FeaturePipelineError(
+                "v6 historical context is not continuous hourly data."
+            )
+
+        # -------------------------------------------------------------
+        # Minimum lookback.
+        # -------------------------------------------------------------
+
+        if len(raw_history) < MAX_LOOKBACK_HOURS:
+
+            raise FeaturePipelineError(
+                "Insufficient historical context in v6. "
+                f"Need at least {MAX_LOOKBACK_HOURS} rows, "
+                f"received {len(raw_history)}."
+            )
+
+        logger.info(
+            "Historical v6 context validation PASSED."
+        )
+
+        logger.info(
+            "Context rows: %s",
+            len(raw_history),
+        )
+
+        logger.info(
+            "Context range: %s → %s",
+            raw_history["timestamp"].iloc[0],
+            raw_history["timestamp"].iloc[-1],
+        )
+
+        return raw_history
+
+
+    # =================================================================
+    # 7. FETCH RECENT AIR QUALITY
+    # =================================================================
+
+    def fetch_recent_air_quality(
+        self,
+    ) -> pd.DataFrame:
+        """
+        Fetch recent hourly air-quality observations from Open-Meteo.
+
+        The window is relative to the current execution time.
+        No calendar date is hardcoded.
+        """
+
+        params = {
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "timezone": "UTC",
+            "past_hours": API_RECENT_HOURS,
+            "forecast_hours": 1,
+            "hourly": [
+                "pm10",
+                "pm2_5",
+                "ozone",
+                "nitrogen_dioxide",
+                "sulphur_dioxide",
+                "carbon_monoxide",
+                "us_aqi",
+            ],
+        }
+
+        logger.info(
+            "Fetching recent hourly air-quality data..."
+        )
+
+        try:
+
+            response = requests.get(
+                AIR_QUALITY_URL,
+                params=params,
+                timeout=REQUEST_TIMEOUT,
+            )
+
+            response.raise_for_status()
+
+            payload = response.json()
+
+        except requests.RequestException as exc:
+
+            raise FeaturePipelineError(
+                f"Air-quality API request failed: {exc}"
+            ) from exc
+
+        hourly = payload.get("hourly")
+
+        if not hourly:
+
+            raise FeaturePipelineError(
+                "Air-quality API returned no hourly data."
+            )
+
+        required = [
+            "time",
+            "pm10",
+            "pm2_5",
+            "ozone",
+            "nitrogen_dioxide",
+            "sulphur_dioxide",
+            "carbon_monoxide",
+            "us_aqi",
+        ]
+
+        missing = [
+            column
+            for column in required
+            if column not in hourly
+        ]
+
+        if missing:
+
+            raise FeaturePipelineError(
+                "Air-quality API is missing fields: "
+                + ", ".join(missing)
+            )
+
+        df = pd.DataFrame(hourly)
+
+        df["timestamp"] = pd.to_datetime(
+            df["time"],
+            utc=True,
+            errors="coerce",
+        )
+
+        if df["timestamp"].isna().any():
+
+            raise FeaturePipelineError(
+                "Air-quality API returned invalid timestamps."
+            )
+
+        df = df.rename(
+            columns={
+                "pm2_5": "pm25",
+                "us_aqi": "target_aqi",
+            }
+        )
+
+        df = df[
+            [
+                "timestamp",
+                "pm25",
+                "pm10",
+                "ozone",
+                "nitrogen_dioxide",
+                "sulphur_dioxide",
+                "carbon_monoxide",
+                "target_aqi",
+            ]
+        ].copy()
+
+        return df
+
+
+    # =================================================================
+    # 8. FETCH RECENT WEATHER
+    # =================================================================
+
+    def fetch_recent_weather(
+        self,
+    ) -> pd.DataFrame:
+        """
+        Fetch recent hourly weather observations from Open-Meteo.
+        """
+
+        params = {
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "timezone": "UTC",
+            "past_hours": API_RECENT_HOURS,
+            "forecast_hours": 1,
+            "hourly": [
+                "temperature_2m",
+                "relative_humidity_2m",
+            ],
+        }
+
+        logger.info(
+            "Fetching recent hourly weather data..."
+        )
+
+        try:
+
+            response = requests.get(
+                WEATHER_URL,
+                params=params,
+                timeout=REQUEST_TIMEOUT,
+            )
+
+            response.raise_for_status()
+
+            payload = response.json()
+
+        except requests.RequestException as exc:
+
+            raise FeaturePipelineError(
+                f"Weather API request failed: {exc}"
+            ) from exc
+
+        hourly = payload.get("hourly")
+
+        if not hourly:
+
+            raise FeaturePipelineError(
+                "Weather API returned no hourly data."
+            )
+
+        required = [
+            "time",
+            "temperature_2m",
+            "relative_humidity_2m",
+        ]
+
+        missing = [
+            column
+            for column in required
+            if column not in hourly
+        ]
+
+        if missing:
+
+            raise FeaturePipelineError(
+                "Weather API is missing fields: "
+                + ", ".join(missing)
+            )
+
+        df = pd.DataFrame(hourly)
+
+        df["timestamp"] = pd.to_datetime(
+            df["time"],
+            utc=True,
+            errors="coerce",
+        )
+
+        if df["timestamp"].isna().any():
+
+            raise FeaturePipelineError(
+                "Weather API returned invalid timestamps."
+            )
+
+        df = df.rename(
+            columns={
+                "temperature_2m": "temperature",
+                "relative_humidity_2m": "humidity",
+            }
+        )
+
+        df = df[
+            [
+                "timestamp",
+                "temperature",
+                "humidity",
+            ]
+        ].copy()
+
+        return df
+
+
+    # =================================================================
+    # 9. BUILD RECENT RAW DATASET
+    # =================================================================
+
+    def build_recent_raw_dataset(
+        self,
+        air_quality: pd.DataFrame,
+        weather: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Merge Open-Meteo air-quality and weather observations.
+        """
+
+        merged = air_quality.merge(
+            weather,
+            on="timestamp",
+            how="inner",
+        )
+
+        if merged.empty:
+
+            raise FeaturePipelineError(
+                "Air-quality and weather APIs have no "
+                "overlapping timestamps."
+            )
+
+        merged = (
+            merged
+            .sort_values("timestamp")
+            .drop_duplicates(
+                subset=["timestamp"],
+                keep="last",
+            )
+            .reset_index(drop=True)
+        )
+
+        # -------------------------------------------------------------
+        # Only completed/current timestamps are usable.
+        # -------------------------------------------------------------
+
+        now = pd.Timestamp(
+            datetime.now(timezone.utc)
+        )
+
+        merged = merged[
+            merged["timestamp"] <= now
+        ].copy()
+
+        if merged.empty:
+
+            raise FeaturePipelineError(
+                "No usable completed hourly observation "
+                "is available from Open-Meteo."
+            )
+
+        # -------------------------------------------------------------
+        # Numeric normalization.
+        # -------------------------------------------------------------
+
+        for column in REQUIRED_RAW_COLUMNS:
+
+            if column == "timestamp":
+                continue
+
+            merged[column] = pd.to_numeric(
+                merged[column],
+                errors="coerce",
+            ).astype("float64")
+
+        # -------------------------------------------------------------
+        # Missing values.
+        # -------------------------------------------------------------
+
+        missing = (
+            merged[
+                list(REQUIRED_RAW_COLUMNS)
+            ]
+            .isna()
+            .sum()
+        )
+
+        missing = missing[
+            missing > 0
+        ]
+
+        if not missing.empty:
+
+            details = ", ".join(
+                f"{column}={int(count)}"
+                for column, count in missing.items()
+            )
+
+            raise FeaturePipelineError(
+                "Open-Meteo recent data contains missing values: "
+                + details
+            )
+
+        return merged[
+            list(REQUIRED_RAW_COLUMNS)
+        ].copy()
+
+
+    # =================================================================
+    # 10. FIND MISSING PRODUCTION HOURS
+    # =================================================================
+
+    def find_missing_hours(
+        self,
+        raw_history: pd.DataFrame,
+        recent_raw: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Identify observations after the latest timestamp stored in v6.
+
+        Existing timestamps are excluded.
+
+        Missed hourly observations are therefore processed in order.
+        """
+
+        latest_v6 = (
+            raw_history["timestamp"].max()
+        )
+
+        candidates = recent_raw[
+            recent_raw["timestamp"]
+            > latest_v6
+        ].copy()
+
+        if candidates.empty:
+
+            logger.info(
+                "No new hourly observations are available."
+            )
+
+            return candidates
+
+        candidates = (
+            candidates
+            .sort_values("timestamp")
+            .drop_duplicates(
+                subset=["timestamp"],
+                keep="last",
+            )
+            .reset_index(drop=True)
+        )
+
+        # -------------------------------------------------------------
+        # The first new timestamp must immediately follow V6.
+        #
+        # This prevents silently skipping an unavailable hour.
+        # -------------------------------------------------------------
+
+        expected_first_timestamp = (
+            latest_v6
+            + pd.Timedelta(hours=1)
+        )
+
+        actual_first_timestamp = (
+            candidates["timestamp"].iloc[0]
+        )
+
+        if actual_first_timestamp != expected_first_timestamp:
+
+            raise FeaturePipelineError(
+                "There is a gap between v6 and Open-Meteo data.\n"
+                f"Latest v6 timestamp: "
+                f"{latest_v6}\n"
+                f"First available API timestamp: "
+                f"{actual_first_timestamp}\n"
+                f"Expected first new timestamp: "
+                f"{expected_first_timestamp}\n\n"
+                "The pipeline stopped instead of silently "
+                "creating incomplete history."
+            )
+
+        # -------------------------------------------------------------
+        # New observations themselves must be continuous.
+        # -------------------------------------------------------------
+
+        intervals = (
+            candidates["timestamp"]
+            .diff()
+            .dropna()
+        )
+
+        if not intervals.empty:
+
+            invalid_intervals = intervals[
+                intervals
+                != pd.Timedelta(hours=1)
+            ]
+
+            if not invalid_intervals.empty:
+
+                raise FeaturePipelineError(
+                    "Open-Meteo recent observations contain "
+                    "a missing hourly timestamp."
+                )
+
+        logger.info(
+            "New hourly observations detected: %s",
+            len(candidates),
+        )
+
+        logger.info(
+            "New range: %s → %s",
+            candidates["timestamp"].iloc[0],
+            candidates["timestamp"].iloc[-1],
+        )
+
+        return candidates
+
+
+    # =================================================================
+    # 11. BUILD NEW FEATURES
+    # =================================================================
+
+    def build_new_feature_rows(
+        self,
+        raw_history: pd.DataFrame,
+        new_raw: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Run the exact shared feature engineering on:
+
+            historical v6 raw context
+                        +
+                 new Open-Meteo rows
+
+        Only newly generated timestamps are returned.
+        """
+
+        if new_raw.empty:
+
+            return pd.DataFrame()
+
+        combined = pd.concat(
+            [
+                raw_history,
+                new_raw,
+            ],
+            ignore_index=True,
+        )
+
+        # -------------------------------------------------------------
+        # Duplicate timestamps must never silently overwrite source
+        # history.
+        # -------------------------------------------------------------
+
+        duplicate_mask = combined[
+            "timestamp"
+        ].duplicated(
+            keep=False
+        )
+
+        if duplicate_mask.any():
+
+            duplicates = (
+                combined.loc[
+                    duplicate_mask,
+                    "timestamp",
+                ]
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+
+            raise FeaturePipelineError(
+                "Duplicate timestamps detected while combining "
+                "v6 history and Open-Meteo data: "
+                + ", ".join(duplicates)
+            )
+
+        combined = (
+            combined
+            .sort_values("timestamp")
+            .reset_index(drop=True)
+        )
+
+        # -------------------------------------------------------------
+        # Final continuity check.
+        # -------------------------------------------------------------
+
+        intervals = (
+            combined["timestamp"]
+            .diff()
+            .dropna()
+        )
+
+        invalid_intervals = intervals[
+            intervals
+            != pd.Timedelta(hours=1)
+        ]
+
+        if not invalid_intervals.empty:
+
+            raise FeaturePipelineError(
+                "Combined historical + new raw data is "
+                "not continuous hourly data."
+            )
+
+        logger.info(
+            "Running shared build_rich_features()..."
+        )
+
+        features = build_rich_features(
+            combined
+        )
+
+        logger.info(
+            "Rich feature frame generated: "
+            "%s rows × %s columns",
+            features.shape[0],
+            features.shape[1],
+        )
+
+        # -------------------------------------------------------------
+        # Canonical contract.
+        # -------------------------------------------------------------
+
+        if len(MODEL_FEATURES) != 100:
+
+            raise FeaturePipelineError(
+                "MODEL_FEATURES contract changed. "
+                f"Expected 100, found {len(MODEL_FEATURES)}."
+            )
+
+        # -------------------------------------------------------------
+        # Select only new timestamps.
+        # -------------------------------------------------------------
+
+        new_timestamps = set(
+            new_raw["timestamp"]
+        )
+
+        latest_features = features[
+            features["timestamp"].isin(
+                new_timestamps
+            )
+        ].copy()
+
+        if latest_features.empty:
+
+            raise FeaturePipelineError(
+                "Feature engineering produced no rows "
+                "for the new production observations."
+            )
+
+        # -------------------------------------------------------------
+        # Validate complete feature rows.
+        # -------------------------------------------------------------
+
+        validate_feature_frame(
+            latest_features,
+            require_complete=True,
+        )
+
+        logger.info(
+            "Production 100-feature validation PASSED "
+            "for %s new row(s).",
+            len(latest_features),
+        )
+
+        latest_features.insert(
+            0,
+            "city",
+            self.city,
+        )
+
+        return latest_features
+
+
+    # =================================================================
+    # 12. PREPARE V6 ROWS
+    # =================================================================
+
+    def prepare_feature_store_rows(
+        self,
+        latest_features: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Prepare rows according to the existing v6 schema:
+
+            city
+            timestamp
+            target_aqi
+            100 MODEL_FEATURES
+        """
+
+        if latest_features.empty:
+
+            return latest_features
+
+        output_columns = [
+            "city",
+            "timestamp",
+            "target_aqi",
+            *MODEL_FEATURES,
+        ]
+
+        missing = [
+            column
+            for column in output_columns
+            if column not in latest_features.columns
+        ]
+
+        if missing:
+
+            raise FeaturePipelineError(
+                "Cannot prepare v6 rows. Missing columns: "
+                + ", ".join(missing)
+            )
+
+        rows = latest_features[
+            output_columns
+        ].copy()
+
+        # -------------------------------------------------------------
+        # Timestamp.
+        #
+        # Keep timezone-aware datetime here. Hopsworks receives the
+        # same logical timestamp type used by the existing Feature
+        # Group schema.
+        # -------------------------------------------------------------
+
+        rows["timestamp"] = pd.to_datetime(
+            rows["timestamp"],
+            utc=True,
+        )
+
+        # -------------------------------------------------------------
+        # target_aqi.
+        # -------------------------------------------------------------
+
+        rows["target_aqi"] = (
+            pd.to_numeric(
+                rows["target_aqi"],
+                errors="coerce",
+            )
+            .astype("float64")
+        )
+
+        # -------------------------------------------------------------
+        # MODEL_FEATURES dtypes.
+        # -------------------------------------------------------------
+
+        temporal_features = {
+            "hour",
+            "day",
+            "month",
+            "day_of_week",
+        }
+
+        for column in MODEL_FEATURES:
+
+            if column in temporal_features:
+
+                rows[column] = (
+                    pd.to_numeric(
+                        rows[column],
+                        errors="coerce",
+                    )
+                    .astype("int64")
+                )
+
+            else:
+
+                rows[column] = (
+                    pd.to_numeric(
+                        rows[column],
+                        errors="coerce",
+                    )
+                    .astype("float64")
+                )
+
+        # -------------------------------------------------------------
+        # Final NaN protection.
+        # -------------------------------------------------------------
+
+        if rows[
+            list(MODEL_FEATURES)
+        ].isna().any().any():
+
+            raise FeaturePipelineError(
+                "Final production rows contain NaN "
+                "inside MODEL_FEATURES."
+            )
+
+        if rows[
+            ["city", "timestamp", "target_aqi"]
+        ].isna().any().any():
+
+            raise FeaturePipelineError(
+                "Final production rows contain NaN "
+                "in required metadata/source columns."
+            )
+
+        # -------------------------------------------------------------
+        # Primary-key duplicate protection.
+        # -------------------------------------------------------------
+
+        if rows.duplicated(
+            subset=PRIMARY_KEY
+        ).any():
+
+            raise FeaturePipelineError(
+                "Duplicate city/timestamp primary keys "
+                "detected in production batch."
+            )
+
+        logger.info(
+            "Prepared %s production row(s) "
+            "with %s MODEL_FEATURES.",
+            len(rows),
+            len(MODEL_FEATURES),
+        )
+
+        return rows
+
+
+    # =================================================================
+    # 13. FINAL DUPLICATE CHECK
+    # =================================================================
+
+    def verify_rows_are_new(
+        self,
+        feature_group,
+        rows: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Perform one final duplicate check immediately before insert.
+
+        This protects against another production process inserting
+        the same timestamp between the initial read and this write.
+        """
+
+        if rows.empty:
+
+            return rows
+
+        earliest = (
+            rows["timestamp"].min()
+        )
+
+        latest = (
+            rows["timestamp"].max()
+        )
+
+        logger.info(
+            "Performing final v6 duplicate check..."
+        )
+
+        try:
+
+            existing = feature_group.read(
+                start_time=earliest,
+                end_time=latest + timedelta(hours=1),
+                dataframe_type="pandas",
+            )
+
+        except Exception as exc:
+
+            raise FeaturePipelineError(
+                "Failed final duplicate check against v6: "
+                f"{exc}"
+            ) from exc
+
+        if existing is None or existing.empty:
+
+            return rows
+
+        existing = self.normalize_v6_timestamp(
+            existing
+        )
+
+        if "city" not in existing.columns:
+
+            raise FeaturePipelineError(
+                "Final duplicate check returned data "
+                "without city column."
+            )
+
+        existing = existing[
+            existing["city"].astype(str).str.lower()
+            == self.city.lower()
+        ]
+
+        existing_keys = set(
+            zip(
+                existing["city"].astype(str),
+                existing["timestamp"],
+            )
+        )
+
+        keep_mask = []
+
+        for _, row in rows.iterrows():
+
+            key = (
+                str(row["city"]),
+                pd.Timestamp(row["timestamp"]),
+            )
+
+            if key in existing_keys:
+
+                logger.warning(
+                    "Skipping timestamp already present "
+                    "in v6: %s",
+                    row["timestamp"],
+                )
+
+                keep_mask.append(False)
+
+            else:
+
+                keep_mask.append(True)
+
+        rows = rows.loc[
+            keep_mask
+        ].copy()
+
+        if rows.empty:
+
+            logger.info(
+                "All generated rows already exist in v6."
+            )
+
+        return rows
+
+
+    # =================================================================
+    # 14. SAVE NEW ROWS
+    # =================================================================
+
+    def save_to_feature_store(
+        self,
+        feature_group,
+        feature_rows: pd.DataFrame,
+    ) -> int:
+        """
+        Insert only genuinely new production rows.
+        """
+
+        if feature_rows.empty:
+
+            logger.info(
+                "Nothing to insert."
+            )
+
+            return 0
+
+        logger.info(
+            "Writing %s new production row(s) to v6...",
+            len(feature_rows),
+        )
+
+        try:
+
+            feature_group.insert(
+                feature_rows,
+                write_options={
+                    "wait_for_job": True,
+                },
+            )
+
+        except Exception as exc:
+
+            raise FeaturePipelineError(
+                "Failed to insert production rows into v6: "
+                f"{exc}"
+            ) from exc
+
+        logger.info(
+            "Successfully inserted %s production row(s).",
+            len(feature_rows),
+        )
+
+        return len(feature_rows)
+
+
+    # =================================================================
+    # 15. COMPLETE RUN
+    # =================================================================
 
     def run(
         self,
         write_to_feature_store: bool = True,
     ) -> pd.DataFrame:
         """
-        Execute the complete production feature pipeline.
+        Execute one production feature update.
 
-        Returns:
-            DataFrame containing the latest complete production row.
+        Normal hourly execution:
+            approximately one new row.
+
+        Missed execution:
+            multiple rows may be caught up if Open-Meteo still
+            provides the complete missing hourly observations.
+
+        Already up to date:
+            returns an empty DataFrame.
+
+        Dry run:
+            write_to_feature_store=False
         """
 
         logger.info(
             "=================================================="
         )
+
         logger.info(
-            "Starting Karachi AQI production feature pipeline"
+            "KARACHI AQI PRODUCTION FEATURE PIPELINE — v6"
         )
+
         logger.info(
             "=================================================="
         )
 
         # -------------------------------------------------------------
-        # Fetch
+        # Connect.
+        # -------------------------------------------------------------
+
+        fs = self.get_feature_store()
+
+        feature_group = self.get_feature_group(
+            fs
+        )
+
+        # -------------------------------------------------------------
+        # Discover the actual latest V6 timestamp.
+        # -------------------------------------------------------------
+
+        latest_v6_timestamp = (
+            self.discover_latest_v6_timestamp(
+                feature_group
+            )
+        )
+
+        # -------------------------------------------------------------
+        # Read historical context anchored to V6.
+        # -------------------------------------------------------------
+
+        history = (
+            self.read_recent_v6_context(
+                feature_group,
+                latest_v6_timestamp,
+            )
+        )
+
+        raw_history = (
+            self.validate_historical_context(
+                history
+            )
+        )
+
+        # -------------------------------------------------------------
+        # Fetch recent Open-Meteo data.
         # -------------------------------------------------------------
 
         air_quality = (
-            self.fetch_air_quality()
+            self.fetch_recent_air_quality()
         )
 
         weather = (
-            self.fetch_weather()
+            self.fetch_recent_weather()
         )
 
-        # -------------------------------------------------------------
-        # Build raw canonical schema
-        # -------------------------------------------------------------
-
-        raw_df = self.build_raw_dataframe(
-            air_quality,
-            weather,
-        )
-
-        # -------------------------------------------------------------
-        # Validate
-        # -------------------------------------------------------------
-
-        self.validate_raw_dataframe(
-            raw_df
-        )
-
-        # -------------------------------------------------------------
-        # Shared feature engineering
-        # -------------------------------------------------------------
-
-        rich_features = (
-            self.build_production_features(
-                raw_df
+        recent_raw = (
+            self.build_recent_raw_dataset(
+                air_quality,
+                weather,
             )
         )
 
         # -------------------------------------------------------------
-        # Prepare serving/Feature Store row
+        # Determine genuinely missing production hours.
         # -------------------------------------------------------------
 
-        feature_row = (
-            self.prepare_feature_store_row(
-                rich_features
+        new_raw = self.find_missing_hours(
+            raw_history,
+            recent_raw,
+        )
+
+        if new_raw.empty:
+
+            logger.info(
+                "=================================================="
+            )
+
+            logger.info(
+                "PRODUCTION PIPELINE ALREADY UP TO DATE"
+            )
+
+            logger.info(
+                "=================================================="
+            )
+
+            return pd.DataFrame()
+
+        # -------------------------------------------------------------
+        # Generate features using shared engineering.
+        # -------------------------------------------------------------
+
+        latest_features = (
+            self.build_new_feature_rows(
+                raw_history,
+                new_raw,
             )
         )
 
         # -------------------------------------------------------------
-        # Store
+        # Prepare exact v6 schema.
+        # -------------------------------------------------------------
+
+        feature_rows = (
+            self.prepare_feature_store_rows(
+                latest_features
+            )
+        )
+
+        # -------------------------------------------------------------
+        # Final duplicate protection.
+        # -------------------------------------------------------------
+
+        feature_rows = (
+            self.verify_rows_are_new(
+                feature_group,
+                feature_rows,
+            )
+        )
+
+        if feature_rows.empty:
+
+            logger.info(
+                "No genuinely new rows remain after "
+                "final duplicate protection."
+            )
+
+            return feature_rows
+
+        # -------------------------------------------------------------
+        # Write or dry-run.
         # -------------------------------------------------------------
 
         if write_to_feature_store:
 
-            self.save_to_feature_store(
-                feature_row
+            inserted = (
+                self.save_to_feature_store(
+                    feature_group,
+                    feature_rows,
+                )
+            )
+
+            logger.info(
+                "Inserted rows: %s",
+                inserted,
+            )
+
+        else:
+
+            logger.info(
+                "DRY RUN: no rows were inserted into Hopsworks."
             )
 
         logger.info(
-            "Production feature pipeline completed successfully."
+            "=================================================="
         )
 
-        return feature_row
+        logger.info(
+            "PRODUCTION FEATURE PIPELINE COMPLETED"
+        )
+
+        logger.info(
+            "=================================================="
+        )
+
+        return feature_rows
 
 
-# ---------------------------------------------------------------------
-# Standalone execution
-# ---------------------------------------------------------------------
+# =====================================================================
+# STANDALONE EXECUTION
+# =====================================================================
 
 if __name__ == "__main__":
 
@@ -1003,49 +1813,100 @@ if __name__ == "__main__":
 
     try:
 
-        row = pipeline.run(
+        # -------------------------------------------------------------
+        # REAL PRODUCTION MODE
+        #
+        # Writes are enabled.
+        # -------------------------------------------------------------
+
+        rows = pipeline.run(
             write_to_feature_store=True
         )
 
-        print("\n==============================================")
-        print(" PRODUCTION FEATURE PIPELINE SUCCESS")
-        print("==============================================")
+        if rows.empty:
 
-        print(
-            "\nCity:",
-            row["city"].iloc[0],
-        )
+            print(
+                "\n=============================================="
+            )
 
-        print(
-            "Timestamp:",
-            row["timestamp"].iloc[0],
-        )
+            print(
+                " V6 ALREADY UP TO DATE"
+            )
 
-        print(
-            "Model feature count:",
-            len(MODEL_FEATURES),
-        )
+            print(
+                "=============================================="
+            )
 
-        print(
-            "Feature NaN count:",
-            int(
-                row[list(MODEL_FEATURES)]
-                .isna()
-                .sum()
-                .sum()
-            ),
-        )
+            print(
+                "\nNo new production rows required."
+            )
 
-        print(
-            "\nLatest production feature row:"
-        )
+        else:
 
-        print(
-            row[
-                ["city", "timestamp"]
-                + list(MODEL_FEATURES)
-            ].T
-        )
+            print(
+                "\n=============================================="
+            )
+
+            print(
+                " PRODUCTION FEATURE PIPELINE SUCCESS"
+            )
+
+            print(
+                "=============================================="
+            )
+
+            print(
+                "\nCity:",
+                rows["city"].iloc[0],
+            )
+
+            print(
+                "Rows processed:",
+                len(rows),
+            )
+
+            print(
+                "First timestamp:",
+                rows["timestamp"].iloc[0],
+            )
+
+            print(
+                "Last timestamp:",
+                rows["timestamp"].iloc[-1],
+            )
+
+            print(
+                "MODEL_FEATURES:",
+                len(MODEL_FEATURES),
+            )
+
+            print(
+                "NaN count:",
+                int(
+                    rows[
+                        list(MODEL_FEATURES)
+                    ]
+                    .isna()
+                    .sum()
+                    .sum()
+                ),
+            )
+
+            print(
+                "\nProduction rows:"
+            )
+
+            print(
+                rows[
+                    [
+                        "city",
+                        "timestamp",
+                        "target_aqi",
+                    ]
+                ].to_string(
+                    index=False
+                )
+            )
 
     except Exception as exc:
 
@@ -1055,3 +1916,4 @@ if __name__ == "__main__":
         )
 
         raise
+
