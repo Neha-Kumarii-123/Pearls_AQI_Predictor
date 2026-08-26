@@ -89,7 +89,7 @@ WEATHER_URL = (
 HOPSWORKS_HOST = "eu-west.cloud.hopsworks.ai"
 
 FEATURE_GROUP_NAME = "karachi_aqi_features"
-FEATURE_GROUP_VERSION = 5
+FEATURE_GROUP_VERSION = 6
 
 PRIMARY_KEY = ["city", "timestamp"]
 
@@ -854,7 +854,7 @@ class AirQualityFeaturePipeline:
     ) -> bool:
         """
         Insert the latest canonical production feature row
-        into Hopsworks Feature Group v4.
+        into Hopsworks Feature Group v6.
         """
 
         if feature_row.empty:

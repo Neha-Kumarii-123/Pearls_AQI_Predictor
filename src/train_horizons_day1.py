@@ -365,10 +365,10 @@ def main():
         )
 
     if "target_aqi" in X.columns:
-        print(
-            "Note: target_aqi is part of the canonical "
-            "MODEL_FEATURES and is therefore intentionally "
-            "available to the model."
+            raise RuntimeError(
+            "target_aqi must not be directly present in X. "
+            "Historical AQI information is represented through "
+            "the canonical target_aqi lag/rolling features."
         )
 
 

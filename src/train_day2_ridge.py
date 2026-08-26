@@ -336,10 +336,14 @@ def main():
         )
 
     if "target_aqi" in X.columns:
-        print(
-            "Note: target_aqi is intentionally included "
-            "as the current AQI input feature."
+        raise RuntimeError(
+            "target_aqi should not be part of X "
+            "for the current V6 MODEL_FEATURES contract."
         )
+
+    print(
+        "Target leakage validation: PASSED"
+    )
 
     # ---------------------------------------------------------
     # 9. Chronological 80/20 split
