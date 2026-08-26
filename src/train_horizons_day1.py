@@ -15,7 +15,7 @@ Important:
 """
 
 from __future__ import annotations
-
+import json
 import joblib
 import numpy as np
 import pandas as pd
@@ -53,6 +53,7 @@ FEATURE_GROUP_VERSION = 6
 # ---------------------------------------------------------------------
 
 MODEL_FILE = "karachi_aqi_day1_xgboost_v6.pkl"
+METRICS_FILE = "karachi_aqi_day1_metrics_v6.json"
 
 FORECAST_HOURS = 24
 
@@ -218,6 +219,21 @@ def main():
         df.sort_values("timestamp")
         .reset_index(drop=True)
     )
+    time_diff = (
+        df["timestamp"]
+        .diff()
+        .dropna()
+    )
+
+    if not (time_diff == pd.Timedelta(hours=1)).all():
+        raise RuntimeError(
+            "V6 timestamps are not a continuous hourly series."
+        )
+
+    print(
+        "Hourly timestamp continuity check: PASSED"
+    )
+
 
     print(
         "\nFirst V6 timestamp:",
@@ -559,10 +575,40 @@ def main():
         f"R² improvement  : "
         f"{r2 - baseline_r2:.4f}"
     )
+        # -------------------------------------------------------------
+    # 16. Save metrics dynamically
+    # -------------------------------------------------------------
 
+    metrics = {
+        "model_mae": float(mae),
+        "model_rmse": float(rmse),
+        "model_r2": float(r2),
+        "baseline_mae": float(baseline_mae),
+        "baseline_rmse": float(baseline_rmse),
+        "baseline_r2": float(baseline_r2),
+        "mae_improvement": float(baseline_mae - mae),
+        "rmse_improvement": float(baseline_rmse - rmse),
+        "r2_improvement": float(r2 - baseline_r2),
+    }
+
+    with open(
+        METRICS_FILE,
+        "w",
+        encoding="utf-8",
+    ) as f:
+        json.dump(
+            metrics,
+            f,
+            indent=2,
+        )
+
+    print(
+        "\nMetrics saved dynamically as:",
+        METRICS_FILE,
+    )
 
     # -------------------------------------------------------------
-    # 16. Save model
+    # 17. Save model
     # -------------------------------------------------------------
 
     joblib.dump(
@@ -577,7 +623,7 @@ def main():
 
 
     # -------------------------------------------------------------
-    # 17. Final summary
+    # 18. Final summary
     # -------------------------------------------------------------
 
     print(

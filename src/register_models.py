@@ -23,10 +23,11 @@ DOTENV_PATH = REPO_ROOT / ".env"
 MODEL_SPECS = [
     {
         "name": "karachi_aqi_day1_xgboost",
-        "artifact": "karachi_aqi_day1_xgboost.pkl",
+        "artifact": "karachi_aqi_day1_xgboost_v6.pkl",
         "description": (
-            "Optimized XGBoost model for Karachi AQI Day +1 (24-hour ahead) "
-            "prediction using the canonical 100-feature contract."
+            "Final XGBoost model for Karachi AQI Day +1 (24-hour ahead) "
+            "prediction using the canonical 100-feature contract from "
+            "Hopsworks Feature Group v6."
         ),
         "horizon": "Day +1",
         "target_column": "target_day1",
@@ -40,12 +41,13 @@ MODEL_SPECS = [
     },
     {
         "name": "karachi_aqi_day2_ridge",
-        "artifact": "karachi_aqi_day2_ridge.pkl",
-        "feature_artifact": "karachi_aqi_day2_features.pkl",
+        "artifact": "karachi_aqi_day2_ridge_v6.pkl",
+        "feature_artifact": "karachi_aqi_day2_features_v6.pkl",
         "description": (
-            "Final Ridge Regression model for Karachi AQI Day +2 (48-hour ahead) "
-            "prediction using the canonical 100-feature contract and a 60-feature "
-            "selection tuned on the validation split."
+            "Final Ridge Regression model for Karachi AQI Day +2 "
+            "(48-hour ahead) prediction using the canonical 100-feature "
+            "contract from Hopsworks Feature Group v6 and a 60-feature "
+            "selection."
         ),
         "horizon": "Day +2",
         "target_column": "target_day2",
@@ -55,16 +57,17 @@ MODEL_SPECS = [
             "r2": 0.1889,
         },
         "selected_features": None,
-        "selected_feature_file": "karachi_aqi_day2_features.pkl",
+        "selected_feature_file": "karachi_aqi_day2_features_v6.pkl",
     },
     {
         "name": "karachi_aqi_day3_ridge",
-        "artifact": "karachi_aqi_day3_ridge.pkl",
-        "feature_artifact": "karachi_aqi_day3_features.pkl",
+        "artifact": "karachi_aqi_day3_ridge_v6.pkl",
+        "feature_artifact": "karachi_aqi_day3_features_v6.pkl",
         "description": (
-            "Final Ridge Regression model for Karachi AQI Day +3 (72-hour ahead) "
-            "prediction using the canonical 100-feature contract and a 60-feature "
-            "selection tuned on the validation split."
+            "Final Ridge Regression model for Karachi AQI Day +3 "
+            "(72-hour ahead) prediction using the canonical 100-feature "
+            "contract from Hopsworks Feature Group v6 and a 60-feature "
+            "selection."
         ),
         "horizon": "Day +3",
         "target_column": "target_day3",
@@ -74,10 +77,9 @@ MODEL_SPECS = [
             "r2": 0.0728,
         },
         "selected_features": None,
-        "selected_feature_file": "karachi_aqi_day3_features.pkl",
+        "selected_feature_file": "karachi_aqi_day3_features_v6.pkl",
     },
 ]
-
 
 def load_environment() -> None:
     if DOTENV_PATH.exists():
@@ -160,7 +162,7 @@ def build_model_bundle(spec: dict[str, Any], *, project_name: str | None = None)
             "target_aqi",
         ],
         "feature_group": "karachi_aqi_features",
-        "feature_group_version": 5,
+        "feature_group_version": 6,
         "project_name": project_name,
     }
 
