@@ -44,6 +44,6 @@ jobs:
       - name: Run Feature Pipeline Script
         env:
           HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
-          AQICN_TOKEN: ${{ secrets.AQICN_TOKEN }}
+         
         run: |
           python src/feature_pipeline.py
