@@ -1,0 +1,18 @@
+{
+  "model_mae": 10.441014764866836,
+  "model_rmse": 14.74055775805693,
+  "model_r2": 0.0727629243652268,
+  "baseline_mae": 14.104513711166051,
+  "baseline_rmse": 19.62964761843587,
+  "baseline_r2": -0.6443261436974754,
+  "mae_improvement": 3.6634989462992156,
+  "rmse_improvement": 4.889089860378942,
+  "r2_improvement": 0.7170890680627022,
+  "forecast_hours": 72,
+  "feature_group": "karachi_aqi_features",
+  "feature_group_version": 6,
+  "original_feature_count": 100,
+  "selected_feature_count": 60,
+  "training_rows": 13843,
+  "testing_rows": 3461
+}

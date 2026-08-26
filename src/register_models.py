@@ -1,9 +1,30 @@
-"""Register the final AQI local artifacts in the Hopsworks Model Registry.
+"""
+Register final AQI model artifacts in the Hopsworks Model Registry.
+
+Automation-compatible design:
+    Day +1 / Day +2 / Day +3 training scripts
+        ↓
+    model .pkl
+    metrics .json
+    selected-features .pkl
+        ↓
+    this script
+        ↓
+    Hopsworks Model Registry
+
+Important:
+    - Metrics are read dynamically from the JSON files produced by
+      the training scripts.
+    - No model performance numbers are hard-coded here.
+    - Existing registry versions are detected automatically.
+    - Default execution is a dry run.
+    - Use --register to actually register models.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -11,144 +32,415 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-import joblib
 import hopsworks
+import joblib
 from dotenv import load_dotenv
 
 from feature_engineering import MODEL_FEATURES
 
+
+# =========================================================
+# PROJECT PATHS
+# =========================================================
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
 DOTENV_PATH = REPO_ROOT / ".env"
+
+
+# =========================================================
+# HOPSWORKS CONFIGURATION
+# =========================================================
+
+FEATURE_GROUP_NAME = "karachi_aqi_features"
+FEATURE_GROUP_VERSION = 6
+
+
+# =========================================================
+# MODEL SPECIFICATIONS
+# =========================================================
+#
+# IMPORTANT:
+# Metrics are NOT stored here.
+# They are loaded dynamically from each model's metrics JSON.
+#
+# =========================================================
 
 MODEL_SPECS = [
     {
         "name": "karachi_aqi_day1_xgboost",
+
         "artifact": "karachi_aqi_day1_xgboost_v6.pkl",
-        "description": (
-            "Final XGBoost model for Karachi AQI Day +1 (24-hour ahead) "
-            "prediction using the canonical 100-feature contract from "
-            "Hopsworks Feature Group v6."
-        ),
-        "horizon": "Day +1",
-        "target_column": "target_day1",
-        "metrics": {
-            "mae": 7.6918,
-            "rmse": 10.9789,
-            "r2": 0.4843,
-        },
-        "selected_features": None,
+
+        "metrics_file": "karachi_aqi_day1_metrics_v6.json",
+
         "selected_feature_file": None,
+
+        "description": (
+            "Final XGBoost model for Karachi AQI Day +1 "
+            "(24-hour ahead) prediction using the canonical "
+            "100-feature contract from Hopsworks Feature Group v6."
+        ),
+
+        "horizon": "Day +1",
+
+        "forecast_hours": 24,
+
+        "target_column": "target_day1",
     },
+
     {
         "name": "karachi_aqi_day2_ridge",
+
         "artifact": "karachi_aqi_day2_ridge_v6.pkl",
-        "feature_artifact": "karachi_aqi_day2_features_v6.pkl",
+
+        "metrics_file": "karachi_aqi_day2_metrics_v6.json",
+
+        "selected_feature_file": "karachi_aqi_day2_features_v6.pkl",
+
         "description": (
             "Final Ridge Regression model for Karachi AQI Day +2 "
-            "(48-hour ahead) prediction using the canonical 100-feature "
-            "contract from Hopsworks Feature Group v6 and a 60-feature "
-            "selection."
+            "(48-hour ahead) prediction using the canonical "
+            "100-feature contract from Hopsworks Feature Group v6 "
+            "and a 60-feature selection."
         ),
+
         "horizon": "Day +2",
+
+        "forecast_hours": 48,
+
         "target_column": "target_day2",
-        "metrics": {
-            "mae": 9.8786,
-            "rmse": 13.7769,
-            "r2": 0.1889,
-        },
-        "selected_features": None,
-        "selected_feature_file": "karachi_aqi_day2_features_v6.pkl",
     },
+
     {
         "name": "karachi_aqi_day3_ridge",
+
         "artifact": "karachi_aqi_day3_ridge_v6.pkl",
-        "feature_artifact": "karachi_aqi_day3_features_v6.pkl",
+
+        "metrics_file": "karachi_aqi_day3_metrics_v6.json",
+
+        "selected_feature_file": "karachi_aqi_day3_features_v6.pkl",
+
         "description": (
             "Final Ridge Regression model for Karachi AQI Day +3 "
-            "(72-hour ahead) prediction using the canonical 100-feature "
-            "contract from Hopsworks Feature Group v6 and a 60-feature "
-            "selection."
+            "(72-hour ahead) prediction using the canonical "
+            "100-feature contract from Hopsworks Feature Group v6 "
+            "and a 60-feature selection."
         ),
+
         "horizon": "Day +3",
+
+        "forecast_hours": 72,
+
         "target_column": "target_day3",
-        "metrics": {
-            "mae": 10.4410,
-            "rmse": 14.7406,
-            "r2": 0.0728,
-        },
-        "selected_features": None,
-        "selected_feature_file": "karachi_aqi_day3_features_v6.pkl",
     },
 ]
 
+
+# =========================================================
+# ENVIRONMENT
+# =========================================================
+
 def load_environment() -> None:
+    """
+    Load environment variables from the repository .env file
+    when available.
+    """
+
     if DOTENV_PATH.exists():
-        load_dotenv(dotenv_path=str(DOTENV_PATH), override=False)
+        load_dotenv(
+            dotenv_path=str(DOTENV_PATH),
+            override=False,
+        )
     else:
-        load_dotenv(override=False)
-
-
-def authenticate_project() -> Any:
-    load_environment()
-    api_key = os.getenv("HOPSWORKS_API_KEY")
-    if not api_key:
-        raise ValueError("HOPSWORKS_API_KEY is not set.")
-    return hopsworks.login(api_key_value=api_key, host="eu-west.cloud.hopsworks.ai")
-
-
-def inspect_registry() -> list[dict[str, Any]]:
-    project = authenticate_project()
-    registry = project.get_model_registry()
-    plan: list[dict[str, Any]] = []
-
-    for spec in MODEL_SPECS:
-        versions = sorted(m.version for m in registry.get_models(spec["name"]))
-        next_version = max(versions) + 1 if versions else 1
-        plan.append(
-            {
-                "name": spec["name"],
-                "existing_versions": versions,
-                "next_version": next_version,
-                "description": spec["description"],
-                "metrics": spec["metrics"],
-            }
+        load_dotenv(
+            override=False,
         )
 
-    return plan
+
+# =========================================================
+# HOPSWORKS AUTHENTICATION
+# =========================================================
+
+def authenticate_project() -> Any:
+    """
+    Authenticate with Hopsworks and return the project.
+    """
+
+    load_environment()
+
+    api_key = os.getenv(
+        "HOPSWORKS_API_KEY"
+    )
+
+    if not api_key:
+        raise RuntimeError(
+            "HOPSWORKS_API_KEY is not set."
+        )
+
+    print(
+        "\n--- Connecting to Hopsworks ---"
+    )
+
+    project = hopsworks.login(
+        api_key_value=api_key,
+        host="eu-west.cloud.hopsworks.ai",
+    )
+
+    print(
+        "Hopsworks authentication: PASSED"
+    )
+
+    return project
 
 
-def load_selected_features(spec: dict[str, Any]) -> list[str] | None:
-    feature_file = spec.get("selected_feature_file")
+# =========================================================
+# LOAD METRICS
+# =========================================================
+
+def load_metrics(
+    spec: dict[str, Any],
+) -> dict[str, float]:
+    """
+    Load model metrics from the JSON file generated by the
+    corresponding training script.
+
+    Expected JSON structure:
+
+        {
+            "model_mae": ...,
+            "model_rmse": ...,
+            "model_r2": ...,
+            ...
+        }
+
+    Returns the metric names expected by the Hopsworks
+    Model Registry.
+    """
+
+    metrics_file = (
+        REPO_ROOT
+        / spec["metrics_file"]
+    )
+
+    if not metrics_file.exists():
+        raise FileNotFoundError(
+            f"Missing metrics file for "
+            f"{spec['name']}:\n"
+            f"{metrics_file}"
+        )
+
+    with open(
+        metrics_file,
+        "r",
+        encoding="utf-8",
+    ) as f:
+
+        raw_metrics = json.load(f)
+
+    required_keys = [
+        "model_mae",
+        "model_rmse",
+        "model_r2",
+    ]
+
+    missing_keys = [
+        key
+        for key in required_keys
+        if key not in raw_metrics
+    ]
+
+    if missing_keys:
+        raise ValueError(
+            f"Metrics file for {spec['name']} "
+            f"is missing required keys: "
+            f"{missing_keys}"
+        )
+
+    metrics = {
+        "mae": float(
+            raw_metrics["model_mae"]
+        ),
+
+        "rmse": float(
+            raw_metrics["model_rmse"]
+        ),
+
+        "r2": float(
+            raw_metrics["model_r2"]
+        ),
+    }
+
+    return metrics
+
+
+# =========================================================
+# LOAD SELECTED FEATURES
+# =========================================================
+
+def load_selected_features(
+    spec: dict[str, Any],
+) -> list[str] | None:
+    """
+    Load the selected-feature artifact for models that use
+    feature selection.
+
+    Day +1 XGBoost currently uses the canonical feature set
+    directly, so its selected_feature_file is None.
+
+    Day +2 and Day +3 Ridge use 60 selected features.
+    """
+
+    feature_file = spec.get(
+        "selected_feature_file"
+    )
+
     if not feature_file:
         return None
 
-    file_path = REPO_ROOT / feature_file
+    file_path = (
+        REPO_ROOT
+        / feature_file
+    )
+
     if not file_path.exists():
         raise FileNotFoundError(
-            f"Missing selected-feature artifact for {spec['name']}: {file_path}"
+            f"Missing selected-feature artifact "
+            f"for {spec['name']}:\n"
+            f"{file_path}"
         )
 
-    features = joblib.load(file_path)
-    if not isinstance(features, list):
-        raise TypeError(f"Expected a list for {feature_file}, found {type(features)!r}")
+    features = joblib.load(
+        file_path
+    )
+
+    if not isinstance(
+        features,
+        list,
+    ):
+        raise TypeError(
+            f"Expected a list in "
+            f"{feature_file}, but found "
+            f"{type(features)!r}"
+        )
+
+    if len(features) != 60:
+        raise ValueError(
+            f"{feature_file} contains "
+            f"{len(features)} features. "
+            f"Expected exactly 60."
+        )
+
+    # Make sure every selected feature belongs
+    # to the canonical 100-feature contract.
+    invalid_features = [
+        feature
+        for feature in features
+        if feature not in MODEL_FEATURES
+    ]
+
+    if invalid_features:
+        raise ValueError(
+            f"{spec['name']} contains features "
+            f"outside canonical MODEL_FEATURES: "
+            f"{invalid_features}"
+        )
+
     return features
 
 
-def build_model_bundle(spec: dict[str, Any], *, project_name: str | None = None) -> tuple[Path, dict[str, Any]]:
-    model_artifact = REPO_ROOT / spec["artifact"]
-    if not model_artifact.exists():
-        raise FileNotFoundError(f"Missing model artifact for {spec['name']}: {model_artifact}")
+# =========================================================
+# VALIDATE MODEL ARTIFACT
+# =========================================================
 
-    selected_features = load_selected_features(spec)
+def validate_model_artifact(
+    spec: dict[str, Any],
+) -> Path:
+    """
+    Verify that the trained model artifact exists and can
+    actually be loaded.
+    """
+
+    model_path = (
+        REPO_ROOT
+        / spec["artifact"]
+    )
+
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"Missing model artifact for "
+            f"{spec['name']}:\n"
+            f"{model_path}"
+        )
+
+    # Verify that the artifact is a valid joblib object.
+    try:
+        model = joblib.load(
+            model_path
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not load model artifact "
+            f"for {spec['name']}: "
+            f"{model_path}"
+        ) from exc
+
+    if model is None:
+        raise ValueError(
+            f"Model artifact loaded as None: "
+            f"{model_path}"
+        )
+
+    return model_path
+
+
+# =========================================================
+# BUILD MODEL METADATA
+# =========================================================
+
+def build_model_metadata(
+    spec: dict[str, Any],
+    metrics: dict[str, float],
+    selected_features: list[str] | None,
+    project_name: str | None = None,
+) -> dict[str, Any]:
+    """
+    Build metadata that travels with the registered model.
+    """
+
     metadata = {
-        "model_name": spec["name"],
-        "horizon": spec["horizon"],
-        "target_column": spec["target_column"],
-        "training_metrics": spec["metrics"],
-        "canonical_feature_count": len(MODEL_FEATURES),
-        "canonical_model_features": list(MODEL_FEATURES),
-        "selected_feature_count": len(selected_features) if selected_features else None,
-        "selected_features": selected_features,
+
+        "model_name":
+            spec["name"],
+
+        "horizon":
+            spec["horizon"],
+
+        "forecast_hours":
+            spec["forecast_hours"],
+
+        "target_column":
+            spec["target_column"],
+
+        "training_metrics":
+            metrics,
+
+        "canonical_feature_count":
+            len(MODEL_FEATURES),
+
+        "canonical_model_features":
+            list(MODEL_FEATURES),
+
+        "selected_feature_count":
+            (
+                len(selected_features)
+                if selected_features
+                else None
+            ),
+
+        "selected_features":
+            selected_features,
+
         "required_raw_columns": [
             "timestamp",
             "pm25",
@@ -161,131 +453,628 @@ def build_model_bundle(spec: dict[str, Any], *, project_name: str | None = None)
             "humidity",
             "target_aqi",
         ],
-        "feature_group": "karachi_aqi_features",
-        "feature_group_version": 6,
-        "project_name": project_name,
+
+        "feature_group":
+            FEATURE_GROUP_NAME,
+
+        "feature_group_version":
+            FEATURE_GROUP_VERSION,
+
+        "feature_engineering":
+            "Shared feature_engineering.py",
+
+        "feature_engineering_status":
+            "Already performed before training",
+
+        "project_name":
+            project_name,
     }
 
-    temporary_dir = Path(tempfile.mkdtemp(prefix=f"{spec['name']}_"))
-    bundled_model = temporary_dir / spec["artifact"]
-    shutil.copy2(model_artifact, bundled_model)
-
-    if spec.get("selected_feature_file"):
-        feature_copy = temporary_dir / spec["selected_feature_file"]
-        shutil.copy2(REPO_ROOT / spec["selected_feature_file"], feature_copy)
-
-    joblib.dump(metadata, temporary_dir / "model_metadata.pkl")
-    return temporary_dir, metadata
+    return metadata
 
 
-def print_registry_plan(plan: list[dict[str, Any]]) -> None:
-    print("\nHopsworks Model Registry inspection")
-    print("=" * 72)
-    for item in plan:
-        existing = item["existing_versions"]
-        next_version = item["next_version"]
-        print(
-            f"- {item['name']}: existing versions={existing or 'NONE'}; "
-            f"new version to be created={next_version}"
-        )
-    print("\nThe three target artifacts are:")
-    for item in plan:
-        print(f"  * {item['name']} -> {item['metrics']}")
-    print("\nNo registration was executed in this review pass.")
+# =========================================================
+# BUILD TEMPORARY MODEL BUNDLE
+# =========================================================
 
+def build_model_bundle(
+    spec: dict[str, Any],
+    project_name: str | None = None,
+) -> tuple[Path, dict[str, Any], dict[str, float]]:
+    """
+    Create a temporary directory containing:
 
-def register_model(project: Any, spec: dict[str, Any]) -> int:
-    registry = project.get_model_registry()
+        model.pkl
+        selected_features.pkl   (if applicable)
+        model_metadata.pkl
+    """
 
-    versions = [
-        m.version
-        for m in registry.get_models(spec["name"])
-    ]
-
-    next_version = max(versions) + 1 if versions else 1
-
-    bundle_dir, metadata = build_model_bundle(
-        spec,
-        project_name=project.project_namespace
+    model_path = validate_model_artifact(
+        spec
     )
 
-    try:
-        model = registry.python.create_model(
-            name=spec["name"],
-            version=next_version,
-            metrics=spec["metrics"],
-            description=spec["description"],
+    metrics = load_metrics(
+        spec
+    )
+
+    selected_features = load_selected_features(
+        spec
+    )
+
+    metadata = build_model_metadata(
+        spec=spec,
+        metrics=metrics,
+        selected_features=selected_features,
+        project_name=project_name,
+    )
+
+    temporary_dir = Path(
+        tempfile.mkdtemp(
+            prefix=f"{spec['name']}_"
+        )
+    )
+
+    bundled_model = (
+        temporary_dir
+        / spec["artifact"]
+    )
+
+    shutil.copy2(
+        model_path,
+        bundled_model,
+    )
+
+    if spec.get(
+        "selected_feature_file"
+    ):
+
+        source_feature_file = (
+            REPO_ROOT
+            / spec["selected_feature_file"]
         )
 
-        model.save(str(bundle_dir))
+        destination_feature_file = (
+            temporary_dir
+            / spec["selected_feature_file"]
+        )
+
+        shutil.copy2(
+            source_feature_file,
+            destination_feature_file,
+        )
+
+    metadata_file = (
+        temporary_dir
+        / "model_metadata.pkl"
+    )
+
+    joblib.dump(
+        metadata,
+        metadata_file,
+    )
+
+    return (
+        temporary_dir,
+        metadata,
+        metrics,
+    )
+
+
+# =========================================================
+# INSPECT REGISTRY
+# =========================================================
+
+def inspect_registry(
+    project: Any,
+) -> list[dict[str, Any]]:
+    """
+    Inspect existing versions for all three models.
+
+    Does NOT create or register anything.
+    """
+
+    registry = (
+        project.get_model_registry()
+    )
+
+    plan: list[dict[str, Any]] = []
+
+    for spec in MODEL_SPECS:
+
+        existing_models = (
+            registry.get_models(
+                spec["name"]
+            )
+        )
+
+        versions = sorted(
+            model.version
+            for model in existing_models
+        )
+
+        next_version = (
+            max(versions) + 1
+            if versions
+            else 1
+        )
+
+        metrics = load_metrics(
+            spec
+        )
+
+        plan.append(
+            {
+                "name":
+                    spec["name"],
+
+                "existing_versions":
+                    versions,
+
+                "next_version":
+                    next_version,
+
+                "metrics":
+                    metrics,
+
+                "artifact":
+                    spec["artifact"],
+
+                "metrics_file":
+                    spec["metrics_file"],
+
+                "horizon":
+                    spec["horizon"],
+            }
+        )
+
+    return plan
+
+
+# =========================================================
+# PRINT REGISTRY PLAN
+# =========================================================
+
+def print_registry_plan(
+    plan: list[dict[str, Any]],
+) -> None:
+    """
+    Display what would be registered.
+    """
+
+    print(
+        "\n=============================================="
+    )
+
+    print(
+        " HOPSWORKS MODEL REGISTRY PLAN"
+    )
+
+    print(
+        "=============================================="
+    )
+
+    for item in plan:
+
+        existing = (
+            item["existing_versions"]
+        )
 
         print(
-            f"Registered {spec['name']} as version {model.version} "
-            f"with metrics={spec['metrics']}"
+            f"\nModel       : {item['name']}"
+        )
+
+        print(
+            f"Horizon     : {item['horizon']}"
+        )
+
+        print(
+            f"Artifact    : {item['artifact']}"
+        )
+
+        print(
+            f"Metrics     : {item['metrics_file']}"
+        )
+
+        print(
+            f"Existing    : "
+            f"{existing if existing else 'NONE'}"
+        )
+
+        print(
+            f"Next version: "
+            f"{item['next_version']}"
+        )
+
+        print(
+            f"MAE         : "
+            f"{item['metrics']['mae']:.4f}"
+        )
+
+        print(
+            f"RMSE        : "
+            f"{item['metrics']['rmse']:.4f}"
+        )
+
+        print(
+            f"R²          : "
+            f"{item['metrics']['r2']:.4f}"
+        )
+
+    print(
+        "\n=============================================="
+    )
+
+
+# =========================================================
+# REGISTER ONE MODEL
+# =========================================================
+
+def register_model(
+    project: Any,
+    spec: dict[str, Any],
+) -> int:
+    """
+    Register one model using the next available version.
+    """
+
+    registry = (
+        project.get_model_registry()
+    )
+
+    existing_models = (
+        registry.get_models(
+            spec["name"]
+        )
+    )
+
+    existing_versions = [
+        model.version
+        for model in existing_models
+    ]
+
+    next_version = (
+        max(existing_versions) + 1
+        if existing_versions
+        else 1
+    )
+
+    print(
+        f"\n--- Registering {spec['name']} ---"
+    )
+
+    print(
+        f"Next registry version: "
+        f"{next_version}"
+    )
+
+    bundle_dir = None
+
+    try:
+
+        (
+            bundle_dir,
+            metadata,
+            metrics,
+        ) = build_model_bundle(
+            spec=spec,
+            project_name=project.project_namespace,
+        )
+
+        model = (
+            registry.python.create_model(
+                name=spec["name"],
+                version=next_version,
+                metrics=metrics,
+                description=spec["description"],
+            )
+        )
+
+        model.save(
+            str(bundle_dir)
+        )
+
+        print(
+            f"Registration PASSED:"
+            f"\n  Model   : {spec['name']}"
+            f"\n  Version : {model.version}"
+            f"\n  MAE     : {metrics['mae']:.4f}"
+            f"\n  RMSE    : {metrics['rmse']:.4f}"
+            f"\n  R²      : {metrics['r2']:.4f}"
         )
 
         return model.version
 
     finally:
-        shutil.rmtree(
-            bundle_dir,
-            ignore_errors=True
+
+        if bundle_dir is not None:
+
+            shutil.rmtree(
+                bundle_dir,
+                ignore_errors=True,
+            )
+
+
+# =========================================================
+# REGISTER ALL MODELS
+# =========================================================
+
+def register_all(
+    project: Any,
+) -> None:
+    """
+    Register Day +1, Day +2 and Day +3 models.
+    """
+
+    print(
+        "\n=============================================="
+    )
+
+    print(
+        " REGISTERING ALL AQI MODELS"
+    )
+
+    print(
+        "=============================================="
+    )
+
+    registered = []
+
+    for spec in MODEL_SPECS:
+
+        version = register_model(
+            project=project,
+            spec=spec,
         )
 
-def register_all(project: Any, *, apply: bool) -> None:
-    plan = inspect_registry()
-    if not apply:
-        print_registry_plan(plan)
-        return
+        registered.append(
+            (
+                spec["name"],
+                version,
+            )
+        )
 
-    print("\nApplying the planned Hopsworks registrations.")
+    print(
+        "\n=============================================="
+    )
+
+    print(
+        " REGISTRATION COMPLETE"
+    )
+
+    print(
+        "=============================================="
+    )
+
+    for name, version in registered:
+
+        print(
+            f"{name} → version {version}"
+        )
+
+    print(
+        "=============================================="
+    )
+
+
+# =========================================================
+# VALIDATE LOCAL ARTIFACTS
+# =========================================================
+
+def validate_local_artifacts() -> None:
+    """
+    Validate all files BEFORE attempting registry registration.
+
+    This is important for CI/CD because the pipeline should fail
+    before touching the registry if an artifact is missing or invalid.
+    """
+
+    print(
+        "\n--- Validating Local Model Artifacts ---"
+    )
+
     for spec in MODEL_SPECS:
-        model_name = spec["name"]
-        next_version = max((m.version for m in project.get_model_registry().get_models(model_name)), default=0) + 1
-        print(f"- {model_name}: registering version {next_version}")
-    print()
 
-    for spec in MODEL_SPECS:
-        existing_versions = [
-            m.version
-            for m in project.get_model_registry().get_models(spec["name"])
-        ]
+        print(
+            f"\nChecking {spec['name']}..."
+        )
 
-        
-        register_model(project, spec)
+        validate_model_artifact(
+            spec
+        )
 
+        load_metrics(
+            spec
+        )
+
+        load_selected_features(
+            spec
+        )
+
+        print(
+            "  Model artifact : PASSED"
+        )
+
+        print(
+            "  Metrics JSON   : PASSED"
+        )
+
+        if spec.get(
+            "selected_feature_file"
+        ):
+
+            print(
+                "  Feature artifact: PASSED"
+            )
+
+    print(
+        "\nLocal artifact validation: PASSED"
+    )
+
+
+# =========================================================
+# MAIN
+# =========================================================
 
 def main() -> int:
+
     parser = argparse.ArgumentParser(
         description=(
-            "Review or apply Hopsworks Model Registry registration for the final "
-            "Day +1/+2/+3 AQI models."
+            "Review or register the final "
+            "Day +1 / Day +2 / Day +3 AQI "
+            "models in the Hopsworks Model Registry."
         )
     )
+
     parser.add_argument(
         "--register",
         action="store_true",
-        help="Actually register the models. Default is a dry-run review only.",
+        help=(
+            "Actually register the models. "
+            "Without this flag, the script performs "
+            "validation and a dry-run only."
+        ),
     )
+
     args = parser.parse_args()
 
-    project = authenticate_project()
-    plan = inspect_registry()
-    print_registry_plan(plan)
+    print(
+        "\n=============================================="
+    )
 
-    if args.register:
-        print("\nRegistration was explicitly requested; proceeding to save the models.")
-        register_all(project, apply=True)
+    print(
+        " KARACHI AQI MODEL REGISTRATION"
+    )
+
+    print(
+        "=============================================="
+    )
+
+    print(
+        f"Feature Group : "
+        f"{FEATURE_GROUP_NAME} v{FEATURE_GROUP_VERSION}"
+    )
+
+    print(
+        f"Canonical features: "
+        f"{len(MODEL_FEATURES)}"
+    )
+
+    # -----------------------------------------------------
+    # 1. Validate local files FIRST
+    # -----------------------------------------------------
+
+    validate_local_artifacts()
+
+    # -----------------------------------------------------
+    # 2. Authenticate
+    # -----------------------------------------------------
+
+    project = authenticate_project()
+
+    # -----------------------------------------------------
+    # 3. Inspect registry
+    # -----------------------------------------------------
+
+    plan = inspect_registry(
+        project
+    )
+
+    print_registry_plan(
+        plan
+    )
+
+    # -----------------------------------------------------
+    # 4. Dry run
+    # -----------------------------------------------------
 
     if not args.register:
-        print("\nDry-run complete. Review the plan above and rerun with --register to apply it.")
+
+        print(
+            "\n=============================================="
+        )
+
+        print(
+            " DRY RUN — NO REGISTRATION PERFORMED"
+        )
+
+        print(
+            "=============================================="
+        )
+
+        print(
+            "Everything above was validated successfully."
+        )
+
+        print(
+            "\nTo actually register the models, run:"
+        )
+
+        print(
+            "python -B src/register_models.py --register"
+        )
+
+        print(
+            "=============================================="
+        )
+
+        return 0
+
+    # -----------------------------------------------------
+    # 5. Actual registration
+    # -----------------------------------------------------
+
+    print(
+        "\nRegistration explicitly requested."
+    )
+
+    register_all(
+        project
+    )
 
     return 0
 
 
+# =========================================================
+# ENTRY POINT
+# =========================================================
+
 if __name__ == "__main__":
+
     try:
-        raise SystemExit(main())
+
+        raise SystemExit(
+            main()
+        )
+
     except KeyboardInterrupt:
-        print("\nInterrupted before registration.", file=sys.stderr)
+
+        print(
+            "\nInterrupted before registration.",
+            file=sys.stderr,
+        )
+
         raise SystemExit(130)
+
+    except Exception as exc:
+
+        print(
+            "\n==============================================",
+            file=sys.stderr,
+        )
+
+        print(
+            " REGISTRATION FAILED",
+            file=sys.stderr,
+        )
+
+        print(
+            "==============================================",
+            file=sys.stderr,
+        )
+
+        print(
+            str(exc),
+            file=sys.stderr,
+        )
+
+        raise SystemExit(1)
