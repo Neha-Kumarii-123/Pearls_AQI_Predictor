@@ -1,0 +1,99 @@
+# ==============================================================================
+# Workflow Name: 10Pearls AQI Predictor - Automated Training Pipeline
+# Description: Automates the daily training of all three AQI forecasting models.
+#              Reads computed features from Hopsworks Feature Group v6,
+#              trains Day +1, Day +2, and Day +3 models sequentially,
+#              and prepares the generated model artifacts.
+# ==============================================================================
+
+name: Production AQI Training Pipeline
+
+# ==============================================================================
+# Trigger conditions
+# ==============================================================================
+
+on:
+  # Run automatically once every day at midnight UTC
+  schedule:
+    - cron: '0 0 * * *'
+
+  # Allow manual execution from the GitHub Actions UI
+  workflow_dispatch:
+
+# ==============================================================================
+# Training job
+# ==============================================================================
+
+jobs:
+  execute-training-pipeline:
+    name: Train Day +1, Day +2 and Day +3 AQI Models
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ------------------------------------------------------------------------
+      # Step 1: Checkout repository
+      # ------------------------------------------------------------------------
+
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------------
+      # Step 2: Set up Python
+      # ------------------------------------------------------------------------
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ------------------------------------------------------------------------
+      # Step 3: Install dependencies
+      # ------------------------------------------------------------------------
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyarrow
+          pip install -r requirements.txt
+
+      # ------------------------------------------------------------------------
+      # Step 4: Train Day +1 model
+      # ------------------------------------------------------------------------
+
+      - name: Train Day +1 AQI Model
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+        run: |
+          python src/train_horizons_day1.py
+
+      # ------------------------------------------------------------------------
+      # Step 5: Train Day +2 model
+      # ------------------------------------------------------------------------
+
+      - name: Train Day +2 AQI Model
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+        run: |
+          python src/train_day2_ridge.py
+
+      # ------------------------------------------------------------------------
+      # Step 6: Train Day +3 model
+      # ------------------------------------------------------------------------
+
+      - name: Train Day +3 AQI Model
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+        run: |
+          python src/train_day3_ridge.py
+
+            # ------------------------------------------------------------------------
+      # Step 7: Register all trained models
+      # ------------------------------------------------------------------------
+
+      - name: Register Models in Hopsworks
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+        run: |
+          python src/register_models.py --register
