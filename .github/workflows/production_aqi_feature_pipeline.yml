@@ -10,7 +10,7 @@ name: Production AQI Feature Pipeline
 on:
   # Schedule: Runs automatically every hour (UTC) to ingest fresh weather telemetry
   schedule:
-    - cron: '0 * * * *' 
+     - cron: '17 * * * *' 
 
   # Manual Trigger: Allows developers to trigger the pipeline manually from the GitHub UI
   workflow_dispatch:

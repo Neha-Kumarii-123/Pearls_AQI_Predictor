@@ -1,16 +1,11 @@
-
 """
 Production inference pipeline for the Karachi AQI Predictor.
 
 Production flow:
 
-    Open-Meteo
-        ↓
-    Production Feature Pipeline
-        ↓
     Hopsworks Feature Group v6
         ↓
-    Latest complete 100-feature row
+    Latest complete feature row
         ↓
     Hopsworks Model Registry
         ↓
@@ -23,16 +18,19 @@ Production flow:
 Important
 ---------
 1. Day +1, Day +2, and Day +3 models are already trained and locked.
-2. This file does NOT retrain or modify any model.
-3. Feature engineering remains inside feature_pipeline.py
-   and feature_engineering.py.
-4. v6 remains the canonical production Feature Group.
-5. If new hourly observations exist, they are written to v6.
-6. If v6 is already up to date, the latest existing v6 row is used.
-7. If multiple missing hours exist, only the latest generated row
-   is used for the current prediction.
-8. The exact model feature contract stored in model metadata is
+2. This file does NOT retrain, modify, or register any model.
+3. Feature engineering and feature generation are handled by the
+   production feature pipeline, not by this inference script.
+4. v6 is the canonical production Feature Group.
+5. This file only reads the latest available Karachi feature row
+   from v6 for inference.
+6. The latest feature row must contain all 100 canonical MODEL_FEATURES.
+7. The exact model feature contract stored in model metadata is
    validated before prediction.
+8. Day +1 uses the canonical feature set, while Day +2 and Day +3
+   use their registered selected feature sets.
+9. This script loads the latest registered model version for each
+   forecasting horizon and generates three AQI predictions.
 """
 
 from __future__ import annotations
