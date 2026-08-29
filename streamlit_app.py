@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 # ============================================================
 
 API_URL = "http://127.0.0.1:8000/predict"
+CURRENT_API_URL = "http://127.0.0.1:8000/current"
 REQUEST_TIMEOUT = 120
 
 # AQI category thresholds + functional colors (unchanged across redesigns
@@ -37,7 +38,7 @@ MODEL_TYPES = {
 # ------------------------------------------------------------
 # Design tokens
 # ------------------------------------------------------------
-HERO_BG_FROM = "#0B0E14"
+HERO_BG_FROM = "#3961B3"
 HERO_BG_TO = "#161C27"
 HERO_TEXT = "#F5F6F8"
 HERO_MUTED = "#9AA3B2"
@@ -405,7 +406,13 @@ def get_predictions():
     response = requests.get(API_URL, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     return response.json()
-
+def get_current():
+    response = requests.get(
+        CURRENT_API_URL,
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.json()
 
 def format_base_timestamp(ts_str):
     try:
@@ -429,7 +436,12 @@ def fetch_and_store():
     st.session_state["prediction"] = data
     st.session_state["last_fetched"] = datetime.now().strftime("%H:%M:%S")
     st.session_state["fetch_error"] = None
+def fetch_current_and_store():
+    with st.spinner("Fetching current AQI..."):
+        data = get_current()
 
+    st.session_state["current"] = data
+    st.session_state["current_error"] = None
 
 # ============================================================
 # SECTION RENDERERS
@@ -440,17 +452,20 @@ def render_hero():
 
     if data:
         pills_html = ""
+
         for i, key in enumerate(["day1", "day2", "day3"], start=1):
             value = data[key]
             _, color = get_aqi_band(value)
-            pills_html += f"""
-            <div class="hero-pill">
-                <div class="hero-pill-label">Day +{i}</div>
-                <div class="hero-pill-value">
-                    <span class="hero-pill-dot" style="background-color:{color};"></span>{value:.1f}
-                </div>
-            </div>
-            """
+
+            pills_html += (
+                f'<div class="hero-pill">'
+                f'<div class="hero-pill-label">Day +{i}</div>'
+                f'<div class="hero-pill-value">'
+                f'<span class="hero-pill-dot" style="background-color:{color};"></span>'
+                f'{value:.1f}'
+                f'</div>'
+                f'</div>'
+            )
     else:
         pills_html = "".join(
             f"""
@@ -520,7 +535,47 @@ def render_cta_row():
         if "prediction" in st.session_state:
             st.caption("Showing the last successful prediction below.")
         st.markdown("</div>", unsafe_allow_html=True)
+def render_current_section():
+    current = st.session_state.get("current")
 
+    if not current:
+        return
+
+    aqi = current["current_aqi"]
+    timestamp = current["timestamp"]
+    category, color = get_aqi_band(aqi)
+
+    st.markdown(
+        f"""
+        <div class="section-inner" style="padding-top:2.6rem;">
+            <div class="section-eyebrow">Current Air Quality</div>
+            <div class="section-title">Latest observed AQI</div>
+            <div class="section-desc">
+                This is the latest actual AQI observation available in Hopsworks,
+                not a model prediction.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="section-inner">', unsafe_allow_html=True)
+
+    with st.container(border=True):
+        c1, c2 = st.columns(2)
+
+        c1.metric(
+            "Current AQI",
+            f"{aqi:.1f}",
+            category,
+        )
+
+        c2.metric(
+            "Last observed",
+            format_base_timestamp(timestamp),
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 def render_overview_section(data):
     st.markdown(
@@ -529,9 +584,8 @@ def render_overview_section(data):
             <div class="section-eyebrow">Forecast Overview</div>
             <div class="section-title">Where the forecast stands right now</div>
             <div class="section-desc">
-                The API doesn't expose a separate live-sensor "current AQI" reading — only the
-                3-day model forecast below. This overview summarizes that forecast, it doesn't
-                invent a current reading.
+                The current observed AQI is shown separately above. This section summarizes
+the 3-day model forecast and does not mix observed and predicted values.
             </div>
         </div>
         """,
@@ -786,9 +840,18 @@ def render_footer():
 
 render_hero()
 render_cta_row()
+# Fetch current observed AQI
+if "current" not in st.session_state and "attempted_current" not in st.session_state:
+    st.session_state["attempted_current"] = True
+    try:
+        fetch_current_and_store()
+    except Exception as exc:
+        st.session_state["current_error"] = f"Unable to fetch current AQI: {exc}"
+
 
 if "prediction" in st.session_state:
     prediction_data = st.session_state["prediction"]
+    render_current_section()
     render_overview_section(prediction_data)
     render_forecast_section(prediction_data)
     render_trend_section(prediction_data)
