@@ -46,11 +46,8 @@ import joblib
 import pandas as pd
 from dotenv import load_dotenv
 
-from feature_engineering import MODEL_FEATURES
-from feature_pipeline import (
-    AirQualityFeaturePipeline,
-    FeaturePipelineError,
-)
+from src.feature_engineering import MODEL_FEATURES
+from src.feature_pipeline import FeaturePipelineError
 
 
 # =====================================================================
@@ -664,113 +661,6 @@ def prepare_model_input(
     return X
 
 
-# =====================================================================
-# GET PRODUCTION FEATURE ROW
-# =====================================================================
-
-def get_production_feature_row(
-    feature_pipeline: AirQualityFeaturePipeline,
-) -> pd.DataFrame:
-    """
-    Run the production feature pipeline.
-
-    Behavior
-    --------
-    If new observations exist:
-        They are written to v6 and the latest generated row
-        is returned.
-
-    If v6 is already up to date:
-        The latest existing v6 row is loaded and returned.
-
-    This guarantees that inference always receives exactly
-    one latest production feature row.
-    """
-
-    print(
-        "\n--- Running production feature pipeline ---"
-    )
-
-    # -------------------------------------------------------------
-    # IMPORTANT:
-    #
-    # Production inference must allow the feature pipeline
-    # to write genuinely new rows into v6.
-    # -------------------------------------------------------------
-
-    generated_rows = feature_pipeline.run(
-        write_to_feature_store=True
-    )
-
-    # -------------------------------------------------------------
-    # Case 1:
-    #
-    # New rows were generated and written.
-    # -------------------------------------------------------------
-
-    if generated_rows is not None and not generated_rows.empty:
-
-        print(
-            "\nNew production rows generated:",
-            len(generated_rows),
-        )
-
-        # ---------------------------------------------------------
-        # IMPORTANT:
-        #
-        # Multiple missed hours may have been caught up.
-        # We must use the LATEST row, not iloc[0].
-        # ---------------------------------------------------------
-
-        generated_rows = (
-            generated_rows
-            .sort_values("timestamp")
-            .reset_index(drop=True)
-        )
-
-        latest_row = generated_rows.iloc[
-            [-1]
-        ].copy()
-
-        print(
-            "Latest generated timestamp:",
-            latest_row["timestamp"].iloc[0],
-        )
-
-        return latest_row
-
-    # -------------------------------------------------------------
-    # Case 2:
-    #
-    # v6 is already up to date.
-    #
-    # feature_pipeline.run() intentionally returns an empty
-    # DataFrame in this situation.
-    # -------------------------------------------------------------
-
-    print(
-        "\nFeature pipeline reports that v6 is already up to date."
-    )
-
-    print(
-        "Reading the latest existing v6 row for inference..."
-    )
-
-    project = connect_to_hopsworks()
-
-    try:
-
-        latest_row = get_latest_v6_row(
-            project
-        )
-
-    finally:
-
-        # Hopsworks handles cleanup through its client lifecycle.
-        pass
-
-    return latest_row
-
 
 # =====================================================================
 # MAIN PREDICTION FUNCTION
@@ -790,29 +680,15 @@ def predict():
     print(
         "=============================================="
     )
-
     # -------------------------------------------------------------
-    # 1. Create production feature pipeline.
+    # 1. Read latest production feature row from v6.
     # -------------------------------------------------------------
 
-    feature_pipeline = (
-        AirQualityFeaturePipeline(
-            city="karachi"
-        )
+    project = connect_to_hopsworks()
+
+    feature_row = get_latest_v6_row(
+        project
     )
-
-    # -------------------------------------------------------------
-    # 2. Generate/update production features.
-    #
-    # This returns exactly ONE latest row for inference.
-    # -------------------------------------------------------------
-
-    feature_row = (
-        get_production_feature_row(
-            feature_pipeline
-        )
-    )
-
     # -------------------------------------------------------------
     # 3. Final feature-row validation.
     # -------------------------------------------------------------
@@ -863,7 +739,9 @@ def predict():
 
     latest_timestamp = (
         feature_row["timestamp"].iloc[0]
+        
     )
+    print("Latest actual AQI:", feature_row["target_aqi"].iloc[0])
 
     print(
         "\nLatest production timestamp:",
@@ -883,7 +761,7 @@ def predict():
     # 4. Connect to Model Registry.
     # -------------------------------------------------------------
 
-    project = connect_to_hopsworks()
+
 
     registry = (
         project.get_model_registry()

@@ -54,7 +54,7 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-from feature_engineering import (
+from src.feature_engineering import (
     MODEL_FEATURES,
     REQUIRED_RAW_COLUMNS,
     MAX_LOOKBACK_HOURS,
