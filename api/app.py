@@ -36,7 +36,7 @@ def get_history():
 
     now = pd.Timestamp.now(tz="UTC")
 
-    start_time = now - pd.Timedelta(days=30)
+    start_time = now - pd.Timedelta(days=90)
 
     dataframe = feature_group.read(
         start_time=start_time.to_pydatetime(),

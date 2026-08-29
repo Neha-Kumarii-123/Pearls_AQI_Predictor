@@ -1,6 +1,7 @@
 import requests
 import streamlit as st
 import plotly.graph_objects as go
+import pandas as pd
 from datetime import datetime, timedelta
 
 
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta
 
 API_URL = "http://127.0.0.1:8000/predict"
 CURRENT_API_URL = "http://127.0.0.1:8000/current"
+HISTORY_API_URL = "http://127.0.0.1:8000/history"
 REQUEST_TIMEOUT = 120
 
 # AQI category thresholds + functional colors (unchanged across redesigns
@@ -414,6 +416,14 @@ def get_current():
     response.raise_for_status()
     return response.json()
 
+def get_history():
+    response = requests.get(
+        HISTORY_API_URL,
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.json()
+
 def format_base_timestamp(ts_str):
     try:
         dt = datetime.fromisoformat(ts_str)
@@ -442,6 +452,12 @@ def fetch_current_and_store():
 
     st.session_state["current"] = data
     st.session_state["current_error"] = None
+def fetch_history_and_store():
+    with st.spinner("Fetching historical AQI data..."):
+        data = get_history()
+
+    st.session_state["history"] = data
+    st.session_state["history_error"] = None
 
 # ============================================================
 # SECTION RENDERERS
@@ -700,7 +716,120 @@ def render_trend_section(data):
         st.plotly_chart(fig, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
+def render_history_section():
+    history = st.session_state.get("history")
 
+    if not history or not history.get("data"):
+        return
+
+    dataframe = pd.DataFrame(history["data"])
+
+    if dataframe.empty:
+        return
+
+    dataframe["date"] = pd.to_datetime(
+        dataframe["date"],
+        errors="coerce",
+    )
+
+    dataframe["target_aqi"] = pd.to_numeric(
+        dataframe["target_aqi"],
+        errors="coerce",
+    )
+
+    dataframe = dataframe.dropna(
+        subset=["date", "target_aqi"]
+    ).sort_values("date")
+
+    if dataframe.empty:
+        return
+
+    st.markdown(
+        """
+        <div class="section-inner" style="padding-top:3rem;">
+            <div class="section-eyebrow">Historical Air Quality</div>
+            <div class="section-title">90-day AQI history</div>
+            <div class="section-desc">
+                Daily average AQI observations from the Hopsworks Feature Store.
+                These are historical observations, not model predictions.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=dataframe["date"],
+            y=dataframe["target_aqi"],
+            mode="lines+markers",
+            line=dict(
+                color=ACCENT,
+                width=2,
+            ),
+            marker=dict(
+                size=5,
+            ),
+            hovertemplate=(
+                "%{x|%d %b %Y}"
+                "<br>AQI: %{y:.1f}"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    for low, high, label, color in AQI_BANDS:
+        fig.add_hrect(
+            y0=low,
+            y1=high,
+            fillcolor=color,
+            opacity=0.06,
+            line_width=0,
+        )
+
+    fig.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(
+            color=TEXT_MUTED,
+            family="Inter",
+        ),
+        margin=dict(
+            l=10,
+            r=10,
+            t=20,
+            b=10,
+        ),
+        height=380,
+        xaxis=dict(
+            title="Date",
+            gridcolor="rgba(0,0,0,0)",
+        ),
+        yaxis=dict(
+            title="Daily Average AQI",
+            gridcolor=CARD_BORDER,
+            zeroline=False,
+        ),
+        showlegend=False,
+    )
+
+    st.markdown(
+        '<div class="section-inner">',
+        unsafe_allow_html=True,
+    )
+
+    with st.container(border=True):
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+        )
+
+    st.markdown(
+        "</div>",
+        unsafe_allow_html=True,
+    )
 def render_alert_section(data):
     max_aqi = max(data["day1"], data["day2"], data["day3"])
     category, color = get_aqi_band(max_aqi)
@@ -848,6 +977,16 @@ if "current" not in st.session_state and "attempted_current" not in st.session_s
     except Exception as exc:
         st.session_state["current_error"] = f"Unable to fetch current AQI: {exc}"
 
+# Fetch historical AQI
+if "history" not in st.session_state and "attempted_history" not in st.session_state:
+    st.session_state["attempted_history"] = True
+
+    try:
+        fetch_history_and_store()
+    except Exception as exc:
+        st.session_state["history_error"] = (
+            f"Unable to fetch historical AQI: {exc}"
+        )
 
 if "prediction" in st.session_state:
     prediction_data = st.session_state["prediction"]
@@ -855,6 +994,7 @@ if "prediction" in st.session_state:
     render_overview_section(prediction_data)
     render_forecast_section(prediction_data)
     render_trend_section(prediction_data)
+    render_history_section()
     render_alert_section(prediction_data)
     render_how_it_works()
     render_model_info(prediction_data)
