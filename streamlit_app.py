@@ -393,21 +393,7 @@ def get_predictions():
     response = requests.get(API_URL, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     return response.json()
-def get_current():
-    response = requests.get(
-        CURRENT_API_URL,
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.json()
 
-def get_history():
-    response = requests.get(
-        HISTORY_API_URL,
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.json()
 
 def format_base_timestamp(ts_str):
     try:
