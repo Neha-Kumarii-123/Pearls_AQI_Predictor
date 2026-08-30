@@ -52,4 +52,4 @@ jobs:
         env:
           HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
         run: |
-          python automate_prediction.py
+            run: python -m src.automate_prediction

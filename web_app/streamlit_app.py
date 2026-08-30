@@ -481,25 +481,14 @@ def initialize_dashboard_data():
         except Exception:
             pass
 
-    if "current" not in st.session_state and "attempted_current" not in st.session_state:
-        st.session_state["attempted_current"] = True
-        try:
-            fetch_current_and_store()
-        except Exception as exc:
-            st.session_state["current_error"] = f"Unable to fetch current AQI: {exc}"
 def render_current_section(data):
     aqi = data["current_aqi"]
     timestamp = data["timestamp"]
 
-    if not current:
-        return
-
-    aqi = current["current_aqi"]
-    timestamp = current["timestamp"]
     category, color = get_aqi_band(aqi)
 
     st.markdown(
-        f"""
+        """
         <div class="section-inner" style="padding-top:2.6rem;">
             <div class="section-eyebrow">Current Air Quality</div>
             <div class="section-title">Latest observed AQI</div>
@@ -529,7 +518,6 @@ def render_current_section(data):
         )
 
     st.markdown("</div>", unsafe_allow_html=True)
-
 def render_overview_section(data):
     st.markdown(
         f"""
@@ -989,11 +977,10 @@ render_hero()
 
 if "prediction" in st.session_state:
     prediction_data = st.session_state["prediction"]
-    render_current_section()
+    render_current_section(prediction_data)
     render_overview_section(prediction_data)
     render_forecast_section(prediction_data)
     render_trend_section(prediction_data)
-    render_history_section()
     render_alert_section(prediction_data)
     render_how_it_works()
     render_model_info(prediction_data)
