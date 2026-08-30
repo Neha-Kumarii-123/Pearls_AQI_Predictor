@@ -410,21 +410,6 @@ def forecast_date_label(base_ts_str, day_offset):
     except Exception:
         return f"Day +{day_offset}"
 
-
-
-def fetch_current_and_store():
-    with st.spinner("Fetching current AQI..."):
-        data = get_current()
-
-    st.session_state["current"] = data
-    st.session_state["current_error"] = None
-def fetch_history_and_store():
-    with st.spinner("Fetching historical AQI data..."):
-        data = get_history()
-
-    st.session_state["history"] = data
-    st.session_state["history_error"] = None
-
 # ============================================================
 # SECTION RENDERERS
 # ============================================================
@@ -502,8 +487,9 @@ def initialize_dashboard_data():
             fetch_current_and_store()
         except Exception as exc:
             st.session_state["current_error"] = f"Unable to fetch current AQI: {exc}"
-def render_current_section():
-    current = st.session_state.get("current")
+def render_current_section(data):
+    aqi = data["current_aqi"]
+    timestamp = data["timestamp"]
 
     if not current:
         return
