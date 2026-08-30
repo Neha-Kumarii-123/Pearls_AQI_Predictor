@@ -1,379 +1,567 @@
-"""
-Automated production prediction pipeline.
-
-Flow:
-    Hopsworks v6
-        ↓
-    Production inference
-        ↓
-    Day +1 / Day +2 / Day +3
-        ↓
-    Hopsworks Prediction Feature Group
-
-This script does NOT train or modify models.
-"""
-
-from __future__ import annotations
-
-import os
-import tempfile
-from pathlib import Path
-
-import hopsworks
+from fastapi import FastAPI
+from src.predict import (
+    get_latest_v6_row,
+    connect_to_hopsworks,
+)
 import pandas as pd
-from dotenv import load_dotenv
-
-from src.predict import predict
+import time
 
 
-# =====================================================================
-# CONFIGURATION
-# =====================================================================
+# ============================================================
+# APP
+# ============================================================
 
-REPO_ROOT = Path(__file__).resolve().parent
-
-load_dotenv(
-    dotenv_path=REPO_ROOT / ".env",
-    override=False,
+app = FastAPI(
+    title="Karachi AQI Predictor"
 )
 
-HOPSWORKS_HOST = "eu-west.cloud.hopsworks.ai"
 
-PREDICTION_FG_NAME = "karachi_aqi_predictions"
-PREDICTION_FG_VERSION = 1
+# ============================================================
+# CACHE CONFIGURATION
+# ============================================================
+
+# How long cached data remains valid.
+CACHE_TTL = 3600
 
 
-# =====================================================================
+# ============================================================
+# APPLICATION CACHE
+# ============================================================
+
+_prediction_cache = None
+_prediction_cache_time = 0
+
+_current_cache = None
+_current_cache_time = 0
+
+_history_cache = None
+_history_cache_time = 0
+
+
+# ============================================================
 # HOPSWORKS CONNECTION
-# =====================================================================
+# ============================================================
 
-def connect_to_hopsworks():
-    """Connect to Hopsworks."""
+@app.on_event("startup")
+async def startup_event():
+    """
+    Initialize Hopsworks and warm up API caches once.
 
-    api_key = os.getenv("HOPSWORKS_API_KEY")
+    Predictions are read from the automated prediction
+    Feature Group instead of running the ML models.
+    """
 
-    if not api_key:
-        raise RuntimeError(
-            "HOPSWORKS_API_KEY is not set."
-        )
+    global _prediction_cache
+    global _prediction_cache_time
+    global _current_cache
+    global _current_cache_time
 
-    print("\n--- Connecting to Hopsworks ---")
+    print("\n--- Warming up API caches ---")
 
-    project = hopsworks.login(
-        api_key_value=api_key,
-        host=HOPSWORKS_HOST,
-        cert_folder=tempfile.gettempdir(),
+    # --------------------------------------------------------
+    # Connect once
+    # --------------------------------------------------------
+
+    project = connect_to_hopsworks()
+
+    # --------------------------------------------------------
+    # Warm current AQI cache
+    # --------------------------------------------------------
+
+    print("Loading latest AQI...")
+
+    feature_row = get_latest_v6_row(project)
+
+    _current_cache = {
+        "timestamp": feature_row["timestamp"].iloc[0],
+        "current_aqi": float(
+            feature_row["target_aqi"].iloc[0]
+        ),
+    }
+
+    _current_cache_time = time.time()
+
+    # --------------------------------------------------------
+    # Warm prediction cache
+    # --------------------------------------------------------
+
+    print("Loading latest automated prediction...")
+
+    prediction_fg = project.get_feature_store().get_feature_group(
+        name="karachi_aqi_predictions",
+        version=1,
     )
 
-    print("--- Hopsworks connection successful ---")
+    prediction_dataframe = prediction_fg.read(
+        dataframe_type="pandas"
+    )
 
-    return project
+    if (
+        prediction_dataframe is not None
+        and not prediction_dataframe.empty
+    ):
 
+        prediction_dataframe = prediction_dataframe.copy()
 
-# =====================================================================
-# CREATE / GET PREDICTION FEATURE GROUP
-# =====================================================================
-
-def get_prediction_feature_group(project):
-    """
-    Get the prediction Feature Group.
-
-    If it does not exist, create it once.
-    """
-
-    fs = project.get_feature_store()
-
-    # -------------------------------------------------------------
-    # Try to get existing Feature Group.
-    # -------------------------------------------------------------
-
-    try:
-
-        prediction_fg = fs.get_feature_group(
-            name=PREDICTION_FG_NAME,
-            version=PREDICTION_FG_VERSION,
+        prediction_dataframe["timestamp"] = pd.to_datetime(
+            prediction_dataframe["timestamp"],
+            utc=True,
+            errors="coerce",
         )
 
-        if prediction_fg is not None:
+        prediction_dataframe = prediction_dataframe.dropna(
+            subset=["timestamp"]
+        )
 
-            print(
-                f"\n--- Using existing prediction Feature Group "
-                f"{PREDICTION_FG_NAME} v{PREDICTION_FG_VERSION} ---"
+        if not prediction_dataframe.empty:
+
+            latest_prediction = (
+                prediction_dataframe
+                .sort_values("timestamp")
+                .iloc[-1]
             )
 
-            return prediction_fg
+            _prediction_cache = {
+                "timestamp": latest_prediction["timestamp"],
+                "current_aqi": float(
+                    latest_prediction["current_aqi"]
+                ),
+                "day1": float(
+                    latest_prediction["day1"]
+                ),
+                "day2": float(
+                    latest_prediction["day2"]
+                ),
+                "day3": float(
+                    latest_prediction["day3"]
+                ),
+                "day1_model_version": int(
+                    latest_prediction[
+                        "day1_model_version"
+                    ]
+                ),
+                "day2_model_version": int(
+                    latest_prediction[
+                        "day2_model_version"
+                    ]
+                ),
+                "day3_model_version": int(
+                    latest_prediction[
+                        "day3_model_version"
+                    ]
+                ),
+            }
 
-    except Exception:
+            _prediction_cache_time = time.time()
+
+            print(
+                "--- Latest automated prediction loaded ---"
+            )
+
+        else:
+
+            print(
+                "--- No valid prediction found ---"
+            )
+
+    else:
 
         print(
-            "\n--- Prediction Feature Group does not exist yet ---"
+            "--- Prediction Feature Group is empty ---"
         )
 
-    # -------------------------------------------------------------
-    # Create Feature Group.
-    # -------------------------------------------------------------
+    print("--- API cache warm-up complete ---\n")
+
+
+# ============================================================
+# ROOT
+# ============================================================
+
+@app.get("/")
+def root():
+    return {
+        "message": "Karachi AQI Predictor API is running"
+    }
+
+
+# ============================================================
+# PREDICTION API
+# ============================================================
+
+@app.get("/predict")
+def get_prediction():
+
+    global _prediction_cache
+    global _prediction_cache_time
+
+    now = time.time()
+
+    # --------------------------------------------------------
+    # Return cached prediction if still valid.
+    # --------------------------------------------------------
+
+    if (
+        _prediction_cache is not None
+        and now - _prediction_cache_time < CACHE_TTL
+    ):
+
+        print(
+            "Returning cached automated prediction."
+        )
+
+        return _prediction_cache
+
+    # --------------------------------------------------------
+    # Read latest prediction from Hopsworks.
+    # --------------------------------------------------------
 
     print(
-        "\n--- Creating prediction Feature Group ---"
+        "Loading latest automated prediction from Hopsworks..."
     )
 
-    prediction_fg = fs.create_feature_group(
-        name=PREDICTION_FG_NAME,
-        version=PREDICTION_FG_VERSION,
-        description=(
-            "Automatically generated Karachi AQI "
-            "predictions for Day +1, Day +2 and Day +3."
-        ),
-        primary_key=[
-            "timestamp"
-        ],
-        event_time="timestamp",
-        online_enabled=False,
+    project = connect_to_hopsworks()
+
+    prediction_fg = project.get_feature_store().get_feature_group(
+        name="karachi_aqi_predictions",
+        version=1,
     )
 
-    print(
-        f"--- Prediction Feature Group created: "
-        f"{PREDICTION_FG_NAME} v{PREDICTION_FG_VERSION} ---"
+    prediction_dataframe = prediction_fg.read(
+        dataframe_type="pandas"
     )
 
-    return prediction_fg
+    if (
+        prediction_dataframe is None
+        or prediction_dataframe.empty
+    ):
 
+        return {
+            "error": "No automated prediction is available yet."
+        }
 
-# =====================================================================
-# CHECK EXISTING PREDICTION
-# =====================================================================
+    prediction_dataframe = prediction_dataframe.copy()
 
-def prediction_already_exists(
-    prediction_fg,
-    timestamp,
-):
-    """
-    Check whether a prediction already exists
-    for the given timestamp.
-    """
+    # --------------------------------------------------------
+    # Timestamp conversion.
+    # --------------------------------------------------------
 
-    try:
-
-        dataframe = prediction_fg.read(
-            dataframe_type="pandas"
-        )
-
-    except Exception as exc:
-
-        print(
-            "Could not read existing predictions. "
-            "Assuming no duplicate exists."
-        )
-
-        print(
-            f"Reason: {exc}"
-        )
-
-        return False
-
-    if dataframe is None or dataframe.empty:
-
-        return False
-
-    if "timestamp" not in dataframe.columns:
-
-        return False
-
-    dataframe["timestamp"] = pd.to_datetime(
-        dataframe["timestamp"],
+    prediction_dataframe["timestamp"] = pd.to_datetime(
+        prediction_dataframe["timestamp"],
         utc=True,
         errors="coerce",
     )
 
-    timestamp = pd.Timestamp(
-        timestamp
+    prediction_dataframe = prediction_dataframe.dropna(
+        subset=["timestamp"]
     )
 
-    return bool(
-        (
-            dataframe["timestamp"]
-            == timestamp
-        ).any()
+    if prediction_dataframe.empty:
+
+        return {
+            "error": "No valid prediction timestamp found."
+        }
+
+    # --------------------------------------------------------
+    # Get latest automated prediction.
+    # --------------------------------------------------------
+
+    latest_prediction = (
+        prediction_dataframe
+        .sort_values("timestamp")
+        .iloc[-1]
     )
 
+    result = {
+        "timestamp": latest_prediction["timestamp"],
+        "current_aqi": float(
+            latest_prediction["current_aqi"]
+        ),
+        "day1": float(
+            latest_prediction["day1"]
+        ),
+        "day2": float(
+            latest_prediction["day2"]
+        ),
+        "day3": float(
+            latest_prediction["day3"]
+        ),
+        "day1_model_version": int(
+            latest_prediction[
+                "day1_model_version"
+            ]
+        ),
+        "day2_model_version": int(
+            latest_prediction[
+                "day2_model_version"
+            ]
+        ),
+        "day3_model_version": int(
+            latest_prediction[
+                "day3_model_version"
+            ]
+        ),
+    }
 
-# =====================================================================
-# STORE PREDICTION
-# =====================================================================
+    # --------------------------------------------------------
+    # Store result in cache.
+    # --------------------------------------------------------
 
-def store_prediction(
-    prediction_fg,
-    result,
-):
-    """Store generated prediction."""
+    _prediction_cache = result
+    _prediction_cache_time = now
 
-    timestamp = pd.Timestamp(
-        result["timestamp"]
-    )
+    return result
 
-    print(
-        "\nPrediction timestamp:",
-        timestamp,
-    )
 
-    # -------------------------------------------------------------
-    # Prevent duplicate predictions.
-    # -------------------------------------------------------------
+# ============================================================
+# CURRENT AQI API
+# ============================================================
 
-    if prediction_already_exists(
-        prediction_fg,
-        timestamp,
+@app.get("/current")
+def get_current():
+
+    global _current_cache
+    global _current_cache_time
+
+    now = time.time()
+
+    # --------------------------------------------------------
+    # Return cached current AQI.
+    # --------------------------------------------------------
+
+    if (
+        _current_cache is not None
+        and now - _current_cache_time < CACHE_TTL
     ):
 
-        print(
-            "Prediction already exists for this timestamp."
-        )
+        print("Returning cached current AQI.")
 
-        return
+        return _current_cache
 
-    # -------------------------------------------------------------
-    # Prepare prediction row.
-    # -------------------------------------------------------------
+    # --------------------------------------------------------
+    # Read latest feature row.
+    # --------------------------------------------------------
 
-    prediction_dataframe = pd.DataFrame(
-        [
-            {
-                "timestamp": timestamp,
-                "current_aqi": float(
-                    result["current_aqi"]
-                ),
-                "day1": float(
-                    result["day1"]
-                ),
-                "day2": float(
-                    result["day2"]
-                ),
-                "day3": float(
-                    result["day3"]
-                ),
-                "day1_model_version": int(
-                    result["day1_model_version"]
-                ),
-                "day2_model_version": int(
-                    result["day2_model_version"]
-                ),
-                "day3_model_version": int(
-                    result["day3_model_version"]
-                ),
-            }
-        ]
-    )
-
-    # -------------------------------------------------------------
-    # Insert prediction.
-    # -------------------------------------------------------------
-
-    print(
-        "\n--- Storing prediction in Hopsworks ---"
-    )
-
-    prediction_fg.insert(
-        prediction_dataframe
-    )
-
-    print(
-        "--- Prediction stored successfully ---"
-    )
-
-    print(
-        prediction_dataframe.to_string(
-            index=False
-        )
-    )
-
-
-# =====================================================================
-# MAIN AUTOMATION
-# =====================================================================
-
-def run_prediction_automation():
-    """
-    Generate and store the latest AQI prediction.
-    """
-
-    print(
-        "\n=============================================="
-    )
-    print(
-        " KARACHI AQI AUTOMATED PREDICTION"
-    )
-    print(
-        "=============================================="
-    )
-
-    # -------------------------------------------------------------
-    # 1. Connect to Hopsworks.
-    # -------------------------------------------------------------
+    print("Reading fresh current AQI...")
 
     project = connect_to_hopsworks()
 
-    # -------------------------------------------------------------
-    # 2. Get or create prediction Feature Group.
-    # -------------------------------------------------------------
-
-    prediction_fg = get_prediction_feature_group(
+    feature_row = get_latest_v6_row(
         project
     )
 
-    # -------------------------------------------------------------
-    # 3. Generate production prediction.
-    # -------------------------------------------------------------
+    result = {
+        "timestamp": feature_row[
+            "timestamp"
+        ].iloc[0],
+        "current_aqi": float(
+            feature_row[
+                "target_aqi"
+            ].iloc[0]
+        ),
+    }
 
-    print(
-        "\n--- Generating production prediction ---"
+    # --------------------------------------------------------
+    # Store current AQI in cache.
+    # --------------------------------------------------------
+
+    _current_cache = result
+    _current_cache_time = now
+
+    return result
+
+
+# ============================================================
+# HISTORY API
+# ============================================================
+
+@app.get("/history")
+def get_history():
+
+    global _history_cache
+    global _history_cache_time
+
+    now_time = time.time()
+
+    # --------------------------------------------------------
+    # Return cached history.
+    # --------------------------------------------------------
+
+    if (
+        _history_cache is not None
+        and now_time - _history_cache_time < CACHE_TTL
+    ):
+
+        print("Returning cached history.")
+
+        return _history_cache
+
+    # --------------------------------------------------------
+    # Connect to Hopsworks.
+    # --------------------------------------------------------
+
+    print("Reading fresh 90-day AQI history...")
+
+    project = connect_to_hopsworks()
+
+    fs = project.get_feature_store()
+
+    feature_group = fs.get_feature_group(
+        name="karachi_aqi_features",
+        version=6,
     )
 
-    result = predict()
+    # --------------------------------------------------------
+    # Read only the required 90-day window.
+    # --------------------------------------------------------
 
-    # -------------------------------------------------------------
-    # 4. Store prediction.
-    # -------------------------------------------------------------
-
-    store_prediction(
-        prediction_fg,
-        result,
+    now = pd.Timestamp.now(
+        tz="UTC"
     )
 
-    print(
-        "\n=============================================="
-    )
-    print(
-        " AUTOMATED PREDICTION SUCCESS"
-    )
-    print(
-        "=============================================="
+    start_time = (
+        now
+        - pd.Timedelta(days=90)
     )
 
+    dataframe = feature_group.read(
+        start_time=start_time.to_pydatetime(),
+        end_time=now.to_pydatetime(),
+        dataframe_type="pandas",
+    )
 
-# =====================================================================
-# STANDALONE EXECUTION
-# =====================================================================
+    if dataframe is None or dataframe.empty:
 
-if __name__ == "__main__":
+        result = {
+            "data": []
+        }
 
-    try:
+        _history_cache = result
+        _history_cache_time = now_time
 
-        run_prediction_automation()
+        return result
 
-    except Exception as exc:
+    dataframe = dataframe.copy()
 
-        print(
-            "\n=============================================="
+    # --------------------------------------------------------
+    # Timestamp conversion.
+    # --------------------------------------------------------
+
+    dataframe["timestamp"] = pd.to_datetime(
+        dataframe["timestamp"],
+        unit="ms",
+        utc=True,
+        errors="coerce",
+    )
+
+    dataframe = dataframe.dropna(
+        subset=["timestamp"]
+    )
+
+    # --------------------------------------------------------
+    # Karachi only.
+    # --------------------------------------------------------
+
+    dataframe = dataframe[
+        dataframe["city"]
+        .astype(str)
+        .str.lower()
+        == "karachi"
+    ].copy()
+
+    # --------------------------------------------------------
+    # Required columns only.
+    # --------------------------------------------------------
+
+    history_columns = [
+        "timestamp",
+        "target_aqi",
+        "pm25",
+        "pm10",
+        "ozone",
+        "nitrogen_dioxide",
+        "sulphur_dioxide",
+        "carbon_monoxide",
+        "temperature",
+        "humidity",
+    ]
+
+    available_columns = [
+        column
+        for column in history_columns
+        if column in dataframe.columns
+    ]
+
+    dataframe = dataframe[
+        available_columns
+    ].sort_values(
+        "timestamp"
+    )
+
+    # --------------------------------------------------------
+    # Daily aggregation.
+    # --------------------------------------------------------
+
+    dataframe["date"] = (
+        dataframe["timestamp"]
+        .dt.date
+    )
+
+    aggregation_columns = [
+        column
+        for column in [
+            "target_aqi",
+            "pm25",
+            "pm10",
+            "ozone",
+            "nitrogen_dioxide",
+            "sulphur_dioxide",
+            "carbon_monoxide",
+            "temperature",
+            "humidity",
+        ]
+        if column in dataframe.columns
+    ]
+
+    daily = (
+        dataframe
+        .groupby(
+            "date",
+            as_index=False,
         )
-        print(
-            " AUTOMATED PREDICTION FAILED"
+        .agg(
+            {
+                column: "mean"
+                for column in aggregation_columns
+            }
         )
-        print(
-            "=============================================="
-        )
+    )
 
-        print(
-            f"\nError: {exc}"
-        )
+    daily["date"] = (
+        daily["date"]
+        .astype(str)
+    )
 
-        raise
+    daily = daily.where(
+        pd.notna(daily),
+        None,
+    )
+
+    result = {
+        "data": daily.to_dict(
+            orient="records"
+        )
+    }
+
+    # --------------------------------------------------------
+    # Store history in cache.
+    # --------------------------------------------------------
+
+    _history_cache = result
+    _history_cache_time = now_time
+
+    return result
+
+
+# ============================================================
+# END
+# ============================================================

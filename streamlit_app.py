@@ -373,20 +373,7 @@ st.markdown(
         line-height: 1.6;
     }}
 
-    /* Primary CTA button styling */
-    div[data-testid="stButton"] > button {{
-        background-color: {ACCENT};
-        color: #1A140A;
-        border: none;
-        font-weight: 700;
-        padding: 0.65rem 1.6rem;
-        border-radius: 9px;
-        font-size: 0.92rem;
-    }}
-    div[data-testid="stButton"] > button:hover {{
-        background-color: #C4913F;
-        color: #1A140A;
-    }}
+    
     </style>
     """,
     unsafe_allow_html=True,
@@ -440,12 +427,7 @@ def forecast_date_label(base_ts_str, day_offset):
         return f"Day +{day_offset}"
 
 
-def fetch_and_store():
-    with st.spinner("Fetching latest AQI predictions..."):
-        data = get_predictions()
-    st.session_state["prediction"] = data
-    st.session_state["last_fetched"] = datetime.now().strftime("%H:%M:%S")
-    st.session_state["fetch_error"] = None
+
 def fetch_current_and_store():
     with st.spinner("Fetching current AQI..."):
         data = get_current()
@@ -511,43 +493,12 @@ def render_hero():
         unsafe_allow_html=True,
     )
 
-
-def render_cta_row():
-    st.markdown('<div class="section-inner" style="padding-top:1.8rem;">', unsafe_allow_html=True)
-    col_btn, col_status = st.columns([1, 3])
-    with col_btn:
-        label = "Refresh Forecast" if "prediction" in st.session_state else "View 3-Day Forecast"
-        clicked = st.button(label, type="primary")
-    with col_status:
-        if st.session_state.get("last_fetched"):
-            st.markdown(
-                f"<div style='color:{TEXT_MUTED}; font-size:0.85rem; padding-top:0.85rem;'>"
-                f"Last refreshed at {st.session_state['last_fetched']}</div>",
-                unsafe_allow_html=True,
-            )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    if clicked:
-        try:
-            fetch_and_store()
-        except requests.exceptions.RequestException as exc:
-            st.session_state["fetch_error"] = f"Unable to reach the FastAPI backend: {exc}"
-        except Exception as exc:
-            st.session_state["fetch_error"] = f"Prediction request failed: {exc}"
-
-    if st.session_state.get("fetch_error"):
-        st.markdown('<div class="section-inner">', unsafe_allow_html=True)
-        st.error(st.session_state["fetch_error"])
-        if "prediction" in st.session_state:
-            st.caption("Showing the last successful prediction below.")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-
 def initialize_dashboard_data():
     if "prediction" not in st.session_state and "attempted_prediction_load" not in st.session_state:
         st.session_state["attempted_prediction_load"] = True
         try:
-            fetch_and_store()
+            data = get_predictions()
+            st.session_state["prediction"] = data
         except Exception:
             pass
 
@@ -984,7 +935,6 @@ def render_footer():
 
 initialize_dashboard_data()
 render_hero()
-render_cta_row()
 
 if "prediction" in st.session_state:
     prediction_data = st.session_state["prediction"]
