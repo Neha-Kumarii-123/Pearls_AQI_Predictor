@@ -421,7 +421,7 @@ def format_base_timestamp(ts_str):
 
 def forecast_date_label(base_ts_str, day_offset):
     try:
-        dt = datetime.fromisoformat(base_ts_str) + timedelta(days=day_offset - 1)
+        dt = datetime.fromisoformat(base_ts_str) + timedelta(days=day_offset)
         return dt.strftime("%d %b")
     except Exception:
         return f"Day +{day_offset}"
@@ -475,25 +475,40 @@ def render_hero():
             for i in range(1, 4)
         )
 
-    st.markdown(
-        f"""
-        <div class="hero-wrap">
-            <div class="section-inner">
-                <div class="hero-badge">AI-Powered Air Quality Forecast</div>
-                <div class="hero-title">Karachi AQI Predictor</div>
-                <div class="hero-subtitle">
-                    A production forecasting system that predicts Karachi's Air Quality Index
-                    three days ahead, powered by a feature store, a model registry, and a
-                    live inference pipeline — not a static dashboard.
+        st.markdown(
+            f"""
+            <div class="alert-card" style="--alert-color:{alert_color}; min-height:130px; display:flex; flex-direction:column; align-items:flex-start; justify-content:center;">
+                <div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.5rem;">
+                    <div class="alert-dot"></div>
+                    <div style="color:{TEXT_DARK}; font-weight:700; font-size:0.95rem;">
+                        {day_label}
+                    </div>
                 </div>
-                <div class="hero-pill-row">{pills_html}</div>
+                <div style="color:{alert_color}; font-weight:700; font-size:1rem; margin-bottom:0.35rem;">
+                    {category}
+                </div>
+                <div style="color:{TEXT_MUTED}; font-size:0.85rem; line-height:1.5;">
+                    {message}
+                </div>
             </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            """,
+            unsafe_allow_html=True,
+        )
 
 def initialize_dashboard_data():
+    """
+    Load only the FAST, already-cached data (prediction + current AQI)
+    before anything is rendered.
+
+    PERFORMANCE FIX: history used to be fetched here too, before
+    render_hero() ran. Since /history can take 17-28s on a cache miss,
+    that meant the entire page stayed blank for that whole duration on
+    first load. History is now fetched lazily inside
+    render_history_section() instead (see below), so the rest of the
+    dashboard (hero, forecast, trend, alerts) renders immediately and
+    only the history section itself shows a loading spinner while it
+    catches up.
+    """
     if "prediction" not in st.session_state and "attempted_prediction_load" not in st.session_state:
         st.session_state["attempted_prediction_load"] = True
         try:
@@ -508,15 +523,6 @@ def initialize_dashboard_data():
             fetch_current_and_store()
         except Exception as exc:
             st.session_state["current_error"] = f"Unable to fetch current AQI: {exc}"
-
-    if "history" not in st.session_state and "attempted_history" not in st.session_state:
-        st.session_state["attempted_history"] = True
-        try:
-            fetch_history_and_store()
-        except Exception as exc:
-            st.session_state["history_error"] = (
-                f"Unable to fetch historical AQI: {exc}"
-            )
 def render_current_section():
     current = st.session_state.get("current")
 
@@ -683,6 +689,20 @@ def render_trend_section(data):
     st.markdown("</div>", unsafe_allow_html=True)
 
 def render_history_section():
+    # Lazily fetch history the first time this section is actually
+    # rendered — i.e. after the hero/forecast/trend/alert sections above
+    # have already been drawn to the page. Same one-shot-per-session
+    # guard (attempted_history) as before, so reruns still don't
+    # repeatedly hit Hopsworks.
+    if "history" not in st.session_state and "attempted_history" not in st.session_state:
+        st.session_state["attempted_history"] = True
+        try:
+            fetch_history_and_store()
+        except Exception as exc:
+            st.session_state["history_error"] = (
+                f"Unable to fetch historical AQI: {exc}"
+            )
+
     history = st.session_state.get("history")
 
     if not history or not history.get("data"):

@@ -5,6 +5,7 @@ from src.predict import (
 )
 import pandas as pd
 import time
+import threading
 
 
 # ============================================================
@@ -118,6 +119,33 @@ def get_aqi_alert(aqi):
 
 @app.on_event("startup")
 async def startup_event():
+    """
+    Kick off cache warm-up in a background thread and return immediately.
+
+    PERFORMANCE FIX: this used to run the Hopsworks connection + the
+    ~14-15s get_latest_v6_row() read directly inside the awaited startup
+    event, which meant uvicorn would not accept ANY request (not even
+    "/" or "/docs") until that finished. Running the exact same warm-up
+    logic in a background daemon thread instead lets the server start
+    accepting requests immediately; the cache still gets warmed a few
+    seconds later, and any request that arrives before it's ready simply
+    falls through to the existing cache-miss path (unchanged) and reads
+    Hopsworks on demand for that one request.
+    """
+
+    print("\n--- Scheduling API cache warm-up in the background ---")
+
+    threading.Thread(
+        target=_warm_up_caches,
+        daemon=True,
+    ).start()
+
+
+def _warm_up_caches():
+    """
+    Same warm-up logic as before (unchanged), just moved out of the
+    awaited startup event so it can run in a background thread.
+    """
 
     global _hopsworks_project
     global _prediction_cache
@@ -125,7 +153,7 @@ async def startup_event():
     global _current_cache
     global _current_cache_time
 
-    print("\n--- Warming up API caches ---")
+    print("\n--- Warming up API caches (background thread) ---")
 
     # --------------------------------------------------------
     # Connect to Hopsworks ONCE
@@ -207,7 +235,7 @@ async def startup_event():
         "--- History cache will load on first /history request ---"
     )
 
-    print("--- API cache warm-up complete ---\n")
+    print("--- API cache warm-up complete (background) ---\n")
 
 
 # ============================================================

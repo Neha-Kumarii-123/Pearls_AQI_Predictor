@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 from pathlib import Path
 
 import hopsworks
@@ -84,6 +85,10 @@ MODEL_NAMES = {
 _HOPSWORKS_PROJECT = None
 _MODEL_CACHE = {}
 
+# Guards Hopsworks login so the background cache warm-up thread and an
+# incoming request can't both try to authenticate at the same time.
+_HOPSWORKS_CONNECT_LOCK = threading.Lock()
+
 
 # =====================================================================
 # HOPSWORKS AUTHENTICATION
@@ -95,6 +100,10 @@ def connect_to_hopsworks():
 
     The project connection is reused across requests in the same FastAPI
     process instead of re-authenticating on every /predict or /current call.
+
+    A lock guards the actual login call so that if two callers (e.g. the
+    startup warm-up thread and an incoming request) reach this function at
+    nearly the same time, only one of them performs the Hopsworks login.
     """
 
     global _HOPSWORKS_PROJECT
@@ -103,22 +112,30 @@ def connect_to_hopsworks():
         print("\n--- Reusing cached Hopsworks project ---")
         return _HOPSWORKS_PROJECT
 
-    api_key = os.getenv("HOPSWORKS_API_KEY")
+    with _HOPSWORKS_CONNECT_LOCK:
 
-    if not api_key:
-        raise RuntimeError(
-            "HOPSWORKS_API_KEY is not set."
+        # Re-check inside the lock: another thread may have already
+        # connected while this one was waiting.
+        if _HOPSWORKS_PROJECT is not None:
+            print("\n--- Reusing cached Hopsworks project ---")
+            return _HOPSWORKS_PROJECT
+
+        api_key = os.getenv("HOPSWORKS_API_KEY")
+
+        if not api_key:
+            raise RuntimeError(
+                "HOPSWORKS_API_KEY is not set."
+            )
+
+        print("\n--- Connecting to Hopsworks ---")
+
+        _HOPSWORKS_PROJECT = hopsworks.login(
+            api_key_value=api_key,
+            host=HOPSWORKS_HOST,
+            cert_folder=tempfile.gettempdir(),
         )
 
-    print("\n--- Connecting to Hopsworks ---")
-
-    _HOPSWORKS_PROJECT = hopsworks.login(
-        api_key_value=api_key,
-        host=HOPSWORKS_HOST,
-        cert_folder=tempfile.gettempdir(),
-    )
-
-    print("--- Hopsworks connection successful ---")
+        print("--- Hopsworks connection successful ---")
 
     return _HOPSWORKS_PROJECT
 
