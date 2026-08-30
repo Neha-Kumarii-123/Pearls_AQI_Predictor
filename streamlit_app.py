@@ -10,8 +10,6 @@ from datetime import datetime, timedelta
 # ============================================================
 
 API_URL = "http://127.0.0.1:8000/predict"
-CURRENT_API_URL = "http://127.0.0.1:8000/current"
-HISTORY_API_URL = "http://127.0.0.1:8000/history"
 REQUEST_TIMEOUT = 120
 
 # AQI category thresholds + functional colors (unchanged across redesigns
