@@ -47,3 +47,9 @@ jobs:
          
         run: |
           python -m src.feature_pipeline
+
+      - name: Run Prediction Automation
+        env:
+          HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+        run: |
+          python automate_prediction.py
