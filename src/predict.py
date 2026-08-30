@@ -75,6 +75,15 @@ MODEL_NAMES = {
     "day3": "karachi_aqi_day3_ridge",
 }
 
+# ---------------------------------------------------------------------
+# APPLICATION-LEVEL CACHES
+# ---------------------------------------------------------------------
+# Keep the heavy Hopsworks and model initialization work in memory for the
+# lifetime of the FastAPI process. The feature row itself remains fresh per
+# request and is never cached as a final prediction.
+_HOPSWORKS_PROJECT = None
+_MODEL_CACHE = {}
+
 
 # =====================================================================
 # HOPSWORKS AUTHENTICATION
@@ -83,7 +92,16 @@ MODEL_NAMES = {
 def connect_to_hopsworks():
     """
     Authenticate with Hopsworks and return the project.
+
+    The project connection is reused across requests in the same FastAPI
+    process instead of re-authenticating on every /predict or /current call.
     """
+
+    global _HOPSWORKS_PROJECT
+
+    if _HOPSWORKS_PROJECT is not None:
+        print("\n--- Reusing cached Hopsworks project ---")
+        return _HOPSWORKS_PROJECT
 
     api_key = os.getenv("HOPSWORKS_API_KEY")
 
@@ -94,7 +112,7 @@ def connect_to_hopsworks():
 
     print("\n--- Connecting to Hopsworks ---")
 
-    project = hopsworks.login(
+    _HOPSWORKS_PROJECT = hopsworks.login(
         api_key_value=api_key,
         host=HOPSWORKS_HOST,
         cert_folder=tempfile.gettempdir(),
@@ -102,7 +120,7 @@ def connect_to_hopsworks():
 
     print("--- Hopsworks connection successful ---")
 
-    return project
+    return _HOPSWORKS_PROJECT
 
 
 # =====================================================================
@@ -253,14 +271,9 @@ def load_registered_model(
     """
     Load the latest version of a registered model.
 
-    The Hopsworks model bundle may contain multiple .pkl files,
-    for example:
-
-        model_metadata.pkl
-        *_features_v6.pkl
-        *_ridge_v6.pkl
-
-    Only the actual trained model artifact must be loaded.
+    Reuse the cached model object when the registry version has not changed.
+    This avoids the expensive download + joblib.load sequence on every
+    prediction request while still respecting the active Hopsworks registry.
 
     Returns
     -------
@@ -269,14 +282,7 @@ def load_registered_model(
     version
     """
 
-    print(
-        f"\n--- Loading registered model: "
-        f"{model_name} ---"
-    )
-
-    # -------------------------------------------------------------
-    # 1. Get registered model versions.
-    # -------------------------------------------------------------
+    global _MODEL_CACHE
 
     models = registry.get_models(
         model_name
@@ -288,23 +294,34 @@ def load_registered_model(
             f"{model_name}"
         )
 
-    # -------------------------------------------------------------
-    # 2. Select latest registered version.
-    # -------------------------------------------------------------
-
     latest_model = max(
         models,
         key=lambda model: model.version,
+    )
+
+    cached_entry = _MODEL_CACHE.get(model_name)
+    if cached_entry is not None:
+        cached_version = cached_entry.get("version")
+        if cached_version == latest_model.version:
+            print(
+                f"Using cached {model_name} "
+                f"version {cached_version}"
+            )
+            return (
+                cached_entry["model"],
+                cached_entry["metadata"],
+                cached_version,
+            )
+
+    print(
+        f"\n--- Loading registered model: "
+        f"{model_name} ---"
     )
 
     print(
         f"Using {model_name} "
         f"version {latest_model.version}"
     )
-
-    # -------------------------------------------------------------
-    # 3. Download model bundle.
-    # -------------------------------------------------------------
 
     model_directory = latest_model.download()
 
@@ -316,10 +333,6 @@ def load_registered_model(
         "Downloaded model directory:",
         model_directory,
     )
-
-    # -------------------------------------------------------------
-    # 4. Load metadata.
-    # -------------------------------------------------------------
 
     metadata_path = (
         model_directory
@@ -345,21 +358,6 @@ def load_registered_model(
             f"found {type(metadata).__name__}."
         )
 
-    # -------------------------------------------------------------
-    # 5. Determine the actual trained model artifact.
-    #
-    # IMPORTANT:
-    #
-    # The registry bundle can contain auxiliary .pkl files.
-    #
-    # Example Day +2:
-    #
-    #   karachi_aqi_day2_features_v6.pkl
-    #   karachi_aqi_day2_ridge_v6.pkl
-    #
-    # We must NOT simply choose any .pkl file.
-    # -------------------------------------------------------------
-
     expected_model_name = metadata.get(
         "model_name"
     )
@@ -370,12 +368,6 @@ def load_registered_model(
             f"model_metadata.pkl for {model_name} "
             "does not contain 'model_name'."
         )
-
-    # -------------------------------------------------------------
-    # First choice:
-    #
-    # Exact metadata-defined artifact.
-    # -------------------------------------------------------------
 
     artifact_path = (
         model_directory
@@ -390,17 +382,6 @@ def load_registered_model(
         )
 
     else:
-
-        # ---------------------------------------------------------
-        # 6. Fallback discovery.
-        #
-        # Ignore:
-        #   model_metadata.pkl
-        #   feature-selection artifacts
-        #   feature metadata artifacts
-        #
-        # Prefer filenames containing the registered model name.
-        # ---------------------------------------------------------
 
         candidates = [
             path
@@ -417,10 +398,6 @@ def load_registered_model(
             and "metadata" not in path.stem.lower()
         ]
 
-        # ---------------------------------------------------------
-        # Exactly one matching model artifact.
-        # ---------------------------------------------------------
-
         if len(model_candidates) == 1:
 
             artifact_path = model_candidates[0]
@@ -430,10 +407,6 @@ def load_registered_model(
                 artifact_path.name,
             )
 
-        # ---------------------------------------------------------
-        # Multiple possible model artifacts.
-        # ---------------------------------------------------------
-
         elif len(model_candidates) > 1:
 
             raise RuntimeError(
@@ -441,10 +414,6 @@ def load_registered_model(
                 f"found for {model_name}: "
                 f"{model_candidates}"
             )
-
-        # ---------------------------------------------------------
-        # No model artifact found.
-        # ---------------------------------------------------------
 
         else:
 
@@ -454,10 +423,6 @@ def load_registered_model(
                 f"Expected: {expected_model_name}.pkl\n"
                 f"Available artifacts: {candidates}"
             )
-
-    # -------------------------------------------------------------
-    # 7. Load ONLY the selected trained model.
-    # -------------------------------------------------------------
 
     try:
 
@@ -472,12 +437,6 @@ def load_registered_model(
             f"{artifact_path}: {exc}"
         ) from exc
 
-    # -------------------------------------------------------------
-    # 8. Final sanity check.
-    #
-    # A trained sklearn/XGBoost model should expose predict().
-    # -------------------------------------------------------------
-
     if not hasattr(model, "predict"):
 
         raise RuntimeError(
@@ -489,6 +448,12 @@ def load_registered_model(
     print(
         "Trained model loaded successfully."
     )
+
+    _MODEL_CACHE[model_name] = {
+        "model": model,
+        "metadata": metadata,
+        "version": latest_model.version,
+    }
 
     return (
         model,

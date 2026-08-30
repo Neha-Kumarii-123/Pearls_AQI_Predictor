@@ -530,20 +530,10 @@ def render_cta_row():
     if clicked:
         try:
             fetch_and_store()
-            st.rerun()
         except requests.exceptions.RequestException as exc:
             st.session_state["fetch_error"] = f"Unable to reach the FastAPI backend: {exc}"
         except Exception as exc:
             st.session_state["fetch_error"] = f"Prediction request failed: {exc}"
-
-    # Silent first-load attempt so the dashboard isn't empty on arrival
-    if "prediction" not in st.session_state and "attempted_autoload" not in st.session_state:
-        st.session_state["attempted_autoload"] = True
-        try:
-            fetch_and_store()
-            st.rerun()
-        except Exception:
-            pass
 
     if st.session_state.get("fetch_error"):
         st.markdown('<div class="section-inner">', unsafe_allow_html=True)
@@ -551,6 +541,31 @@ def render_cta_row():
         if "prediction" in st.session_state:
             st.caption("Showing the last successful prediction below.")
         st.markdown("</div>", unsafe_allow_html=True)
+
+
+def initialize_dashboard_data():
+    if "prediction" not in st.session_state and "attempted_prediction_load" not in st.session_state:
+        st.session_state["attempted_prediction_load"] = True
+        try:
+            fetch_and_store()
+        except Exception:
+            pass
+
+    if "current" not in st.session_state and "attempted_current" not in st.session_state:
+        st.session_state["attempted_current"] = True
+        try:
+            fetch_current_and_store()
+        except Exception as exc:
+            st.session_state["current_error"] = f"Unable to fetch current AQI: {exc}"
+
+    if "history" not in st.session_state and "attempted_history" not in st.session_state:
+        st.session_state["attempted_history"] = True
+        try:
+            fetch_history_and_store()
+        except Exception as exc:
+            st.session_state["history_error"] = (
+                f"Unable to fetch historical AQI: {exc}"
+            )
 def render_current_section():
     current = st.session_state.get("current")
 
@@ -967,26 +982,9 @@ def render_footer():
 # PAGE ASSEMBLY
 # ============================================================
 
+initialize_dashboard_data()
 render_hero()
 render_cta_row()
-# Fetch current observed AQI
-if "current" not in st.session_state and "attempted_current" not in st.session_state:
-    st.session_state["attempted_current"] = True
-    try:
-        fetch_current_and_store()
-    except Exception as exc:
-        st.session_state["current_error"] = f"Unable to fetch current AQI: {exc}"
-
-# Fetch historical AQI
-if "history" not in st.session_state and "attempted_history" not in st.session_state:
-    st.session_state["attempted_history"] = True
-
-    try:
-        fetch_history_and_store()
-    except Exception as exc:
-        st.session_state["history_error"] = (
-            f"Unable to fetch historical AQI: {exc}"
-        )
 
 if "prediction" in st.session_state:
     prediction_data = st.session_state["prediction"]

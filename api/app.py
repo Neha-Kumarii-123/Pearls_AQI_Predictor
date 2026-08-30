@@ -6,6 +6,14 @@ import pandas as pd
 app = FastAPI(title="Karachi AQI Predictor")
 
 
+@app.on_event("startup")
+async def startup_event():
+    # Keep the Hopsworks project connection warm for the lifetime of the
+    # FastAPI process without adding extra infrastructure or changing the
+    # API response schemas.
+    connect_to_hopsworks()
+
+
 @app.get("/")
 def root():
     return {"message": "Karachi AQI Predictor API is running"}

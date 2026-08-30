@@ -46,4 +46,4 @@ jobs:
           HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
          
         run: |
-          python src/feature_pipeline.py
+          python -m src.feature_pipeline
