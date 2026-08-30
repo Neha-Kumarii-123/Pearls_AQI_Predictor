@@ -20,7 +20,7 @@ app = FastAPI(
 # CACHE CONFIGURATION
 # ============================================================
 
-# Cached data remains valid for 1 hour.
+# Cache remains valid for 1 hour.
 CACHE_TTL = 3600
 
 
@@ -37,8 +37,79 @@ _current_cache_time = 0
 _history_cache = None
 _history_cache_time = 0
 
-# Keep one Hopsworks project connection for the API process.
+# One Hopsworks connection for the whole API process.
 _hopsworks_project = None
+
+
+# ============================================================
+# AQI ALERT LOGIC
+# ============================================================
+
+def get_aqi_alert(aqi):
+    """
+    Convert AQI value into a health category and alert message.
+    """
+
+    aqi = float(aqi)
+
+    if aqi <= 50:
+
+        return {
+            "category": "Good",
+            "level": "safe",
+            "message": "Air quality is good."
+        }
+
+    elif aqi <= 100:
+
+        return {
+            "category": "Moderate",
+            "level": "moderate",
+            "message": "Air quality is acceptable."
+        }
+
+    elif aqi <= 150:
+
+        return {
+            "category": "Unhealthy for Sensitive Groups",
+            "level": "warning",
+            "message": (
+                "Sensitive groups should reduce prolonged "
+                "outdoor activity."
+            )
+        }
+
+    elif aqi <= 200:
+
+        return {
+            "category": "Unhealthy",
+            "level": "warning",
+            "message": (
+                "Everyone should reduce prolonged "
+                "outdoor activity."
+            )
+        }
+
+    elif aqi <= 300:
+
+        return {
+            "category": "Very Unhealthy",
+            "level": "danger",
+            "message": (
+                "Health alert: everyone may experience "
+                "health effects."
+            )
+        }
+
+    else:
+
+        return {
+            "category": "Hazardous",
+            "level": "hazard",
+            "message": (
+                "Health emergency: avoid outdoor activity."
+            )
+        }
 
 
 # ============================================================
@@ -47,10 +118,6 @@ _hopsworks_project = None
 
 @app.on_event("startup")
 async def startup_event():
-    """
-    Connect to Hopsworks once when the API starts
-    and warm the current AQI + prediction caches.
-    """
 
     global _hopsworks_project
     global _prediction_cache
@@ -61,37 +128,54 @@ async def startup_event():
     print("\n--- Warming up API caches ---")
 
     # --------------------------------------------------------
-    # Connect to Hopsworks once
+    # Connect to Hopsworks ONCE
     # --------------------------------------------------------
 
     _hopsworks_project = connect_to_hopsworks()
 
     # --------------------------------------------------------
-    # Warm current AQI cache
+    # Warm CURRENT AQI cache
     # --------------------------------------------------------
 
     print("Loading latest AQI...")
 
-    feature_row = get_latest_v6_row(
-        _hopsworks_project
-    )
+    try:
 
-    _current_cache = {
-        "timestamp": feature_row["timestamp"].iloc[0],
-        "current_aqi": float(
+        feature_row = get_latest_v6_row(
+            _hopsworks_project
+        )
+
+        current_aqi = float(
             feature_row["target_aqi"].iloc[0]
-        ),
-    }
+        )
 
-    _current_cache_time = time.time()
+        _current_cache = {
+            "timestamp": feature_row["timestamp"].iloc[0],
+            "current_aqi": current_aqi,
+            "alert": get_aqi_alert(current_aqi),
+        }
+
+        _current_cache_time = time.time()
+
+        print("--- Current AQI cache ready ---")
+
+    except Exception as exc:
+
+        print(
+            f"--- Current AQI cache warm-up failed: {exc} ---"
+        )
+
+        _current_cache = None
+        _current_cache_time = 0
 
     # --------------------------------------------------------
-    # Warm prediction cache
+    # Warm SAVED PREDICTION cache
     # --------------------------------------------------------
 
     print("Loading latest saved prediction...")
 
     try:
+
         _prediction_cache = read_latest_prediction(
             _hopsworks_project
         )
@@ -108,9 +192,20 @@ async def startup_event():
             f"--- Prediction cache warm-up failed: {exc} ---"
         )
 
-        # Do not prevent the API from starting.
         _prediction_cache = None
         _prediction_cache_time = 0
+
+    # --------------------------------------------------------
+    # IMPORTANT:
+    #
+    # DO NOT warm history here.
+    #
+    # History is loaded only when /history is requested.
+    # --------------------------------------------------------
+
+    print(
+        "--- History cache will load on first /history request ---"
+    )
 
     print("--- API cache warm-up complete ---\n")
 
@@ -122,8 +217,9 @@ async def startup_event():
 def read_latest_prediction(project):
     """
     Read the latest prediction already generated by the
-    automated prediction pipeline from:
+    automated prediction pipeline.
 
+    Feature Group:
         karachi_aqi_predictions v1
 
     No model loading or inference is performed here.
@@ -136,15 +232,15 @@ def read_latest_prediction(project):
         version=1,
     )
 
-    # Prediction Feature Group is small, so reading it is
-    # considerably cheaper than running model inference.
     dataframe = prediction_fg.read(
         dataframe_type="pandas"
     )
 
     if dataframe is None or dataframe.empty:
+
         raise RuntimeError(
-            "No saved predictions found in karachi_aqi_predictions v1."
+            "No saved predictions found in "
+            "karachi_aqi_predictions v1."
         )
 
     dataframe = dataframe.copy()
@@ -164,12 +260,14 @@ def read_latest_prediction(project):
     )
 
     if dataframe.empty:
+
         raise RuntimeError(
-            "Prediction Feature Group contains no valid timestamps."
+            "Prediction Feature Group contains "
+            "no valid timestamps."
         )
 
     # --------------------------------------------------------
-    # Get latest prediction row
+    # Latest prediction
     # --------------------------------------------------------
 
     latest = (
@@ -178,20 +276,25 @@ def read_latest_prediction(project):
         .iloc[-1]
     )
 
-    # --------------------------------------------------------
-    # Preserve the response structure expected by Streamlit
-    # --------------------------------------------------------
+    day1 = float(latest["day1"])
+    day2 = float(latest["day2"])
+    day3 = float(latest["day3"])
 
     result = {
         "timestamp": latest["timestamp"],
 
-        "day1": float(latest["day1"]),
-        "day2": float(latest["day2"]),
-        "day3": float(latest["day3"]),
+        "day1": day1,
+        "day1_alert": get_aqi_alert(day1),
+
+        "day2": day2,
+        "day2_alert": get_aqi_alert(day2),
+
+        "day3": day3,
+        "day3_alert": get_aqi_alert(day3),
     }
 
     # --------------------------------------------------------
-    # Preserve model version information if available
+    # Model versions
     # --------------------------------------------------------
 
     for key in [
@@ -199,8 +302,12 @@ def read_latest_prediction(project):
         "day2_model_version",
         "day3_model_version",
     ]:
+
         if key in dataframe.columns:
-            result[key] = int(latest[key])
+
+            result[key] = int(
+                latest[key]
+            )
 
     print(
         f"Latest saved prediction timestamp: "
@@ -211,174 +318,16 @@ def read_latest_prediction(project):
 
 
 # ============================================================
-# ROOT
+# READ 90-DAY HISTORY
 # ============================================================
 
-@app.get("/")
-def root():
-    return {
-        "message": "Karachi AQI Predictor API is running"
-    }
-
-
-# ============================================================
-# PREDICTION API
-# ============================================================
-
-@app.get("/predict")
-def get_prediction():
-
-    global _prediction_cache
-    global _prediction_cache_time
-    global _hopsworks_project
-
-    now = time.time()
-
-    # --------------------------------------------------------
-    # Return cached prediction if still valid.
-    # --------------------------------------------------------
-
-    if (
-        _prediction_cache is not None
-        and now - _prediction_cache_time < CACHE_TTL
-    ):
-
-        print(
-            "Returning cached saved prediction."
-        )
-
-        return _prediction_cache
-
-    # --------------------------------------------------------
-    # Read latest prediction already saved by automation.
-    # --------------------------------------------------------
+def read_history(project):
 
     print(
-        "Reading latest saved prediction from Hopsworks..."
+        "Reading 90-day AQI history from Hopsworks..."
     )
 
-    if _hopsworks_project is None:
-        _hopsworks_project = connect_to_hopsworks()
-
-    result = read_latest_prediction(
-        _hopsworks_project
-    )
-
-    # --------------------------------------------------------
-    # Store result in cache.
-    # --------------------------------------------------------
-
-    _prediction_cache = result
-    _prediction_cache_time = now
-
-    return result
-
-
-# ============================================================
-# CURRENT AQI API
-# ============================================================
-
-@app.get("/current")
-def get_current():
-
-    global _current_cache
-    global _current_cache_time
-    global _hopsworks_project
-
-    now = time.time()
-
-    # --------------------------------------------------------
-    # Return cached current AQI.
-    # --------------------------------------------------------
-
-    if (
-        _current_cache is not None
-        and now - _current_cache_time < CACHE_TTL
-    ):
-
-        print(
-            "Returning cached current AQI."
-        )
-
-        return _current_cache
-
-    # --------------------------------------------------------
-    # Read latest feature row.
-    # --------------------------------------------------------
-
-    print(
-        "Reading fresh current AQI..."
-    )
-
-    if _hopsworks_project is None:
-        _hopsworks_project = connect_to_hopsworks()
-
-    feature_row = get_latest_v6_row(
-        _hopsworks_project
-    )
-
-    result = {
-        "timestamp": feature_row[
-            "timestamp"
-        ].iloc[0],
-
-        "current_aqi": float(
-            feature_row[
-                "target_aqi"
-            ].iloc[0]
-        ),
-    }
-
-    # --------------------------------------------------------
-    # Store current AQI in cache.
-    # --------------------------------------------------------
-
-    _current_cache = result
-    _current_cache_time = now
-
-    return result
-
-
-# ============================================================
-# HISTORY API
-# ============================================================
-
-@app.get("/history")
-def get_history():
-
-    global _history_cache
-    global _history_cache_time
-    global _hopsworks_project
-
-    now_time = time.time()
-
-    # --------------------------------------------------------
-    # Return cached history.
-    # --------------------------------------------------------
-
-    if (
-        _history_cache is not None
-        and now_time - _history_cache_time < CACHE_TTL
-    ):
-
-        print(
-            "Returning cached history."
-        )
-
-        return _history_cache
-
-    # --------------------------------------------------------
-    # Connect to Hopsworks.
-    # --------------------------------------------------------
-
-    print(
-        "Reading fresh 90-day AQI history..."
-    )
-
-    if _hopsworks_project is None:
-        _hopsworks_project = connect_to_hopsworks()
-
-    fs = _hopsworks_project.get_feature_store()
+    fs = project.get_feature_store()
 
     feature_group = fs.get_feature_group(
         name="karachi_aqi_features",
@@ -386,7 +335,7 @@ def get_history():
     )
 
     # --------------------------------------------------------
-    # Read only the required 90-day window.
+    # Required date range
     # --------------------------------------------------------
 
     now = pd.Timestamp.now(
@@ -398,6 +347,28 @@ def get_history():
         - pd.Timedelta(days=90)
     )
 
+    # --------------------------------------------------------
+    # Dashboard columns
+    # --------------------------------------------------------
+
+    history_columns = [
+        "city",
+        "timestamp",
+        "target_aqi",
+        "pm25",
+        "pm10",
+        "ozone",
+        "nitrogen_dioxide",
+        "sulphur_dioxide",
+        "carbon_monoxide",
+        "temperature",
+        "humidity",
+    ]
+
+    # --------------------------------------------------------
+    # Read history
+    # --------------------------------------------------------
+
     dataframe = feature_group.read(
         start_time=start_time.to_pydatetime(),
         end_time=now.to_pydatetime(),
@@ -406,19 +377,28 @@ def get_history():
 
     if dataframe is None or dataframe.empty:
 
-        result = {
+        return {
             "data": []
         }
-
-        _history_cache = result
-        _history_cache_time = now_time
-
-        return result
 
     dataframe = dataframe.copy()
 
     # --------------------------------------------------------
-    # Timestamp conversion.
+    # Keep ONLY dashboard columns
+    # --------------------------------------------------------
+
+    available_columns = [
+        column
+        for column in history_columns
+        if column in dataframe.columns
+    ]
+
+    dataframe = dataframe[
+        available_columns
+    ].copy()
+
+    # --------------------------------------------------------
+    # Timestamp
     # --------------------------------------------------------
 
     dataframe["timestamp"] = pd.to_datetime(
@@ -433,47 +413,28 @@ def get_history():
     )
 
     # --------------------------------------------------------
-    # Karachi only.
+    # Karachi only
     # --------------------------------------------------------
 
-    dataframe = dataframe[
-        dataframe["city"]
-        .astype(str)
-        .str.lower()
-        == "karachi"
-    ].copy()
+    if "city" in dataframe.columns:
+
+        dataframe = dataframe[
+            dataframe["city"]
+            .astype(str)
+            .str.lower()
+            == "karachi"
+        ].copy()
 
     # --------------------------------------------------------
-    # Required columns only.
+    # Sort
     # --------------------------------------------------------
 
-    history_columns = [
-        "timestamp",
-        "target_aqi",
-        "pm25",
-        "pm10",
-        "ozone",
-        "nitrogen_dioxide",
-        "sulphur_dioxide",
-        "carbon_monoxide",
-        "temperature",
-        "humidity",
-    ]
-
-    available_columns = [
-        column
-        for column in history_columns
-        if column in dataframe.columns
-    ]
-
-    dataframe = dataframe[
-        available_columns
-    ].sort_values(
+    dataframe = dataframe.sort_values(
         "timestamp"
     )
 
     # --------------------------------------------------------
-    # Daily aggregation.
+    # Daily aggregation
     # --------------------------------------------------------
 
     dataframe["date"] = (
@@ -511,6 +472,10 @@ def get_history():
         )
     )
 
+    # --------------------------------------------------------
+    # JSON-safe date
+    # --------------------------------------------------------
+
     daily["date"] = (
         daily["date"]
         .astype(str)
@@ -521,17 +486,202 @@ def get_history():
         None,
     )
 
-    result = {
+    return {
         "data": daily.to_dict(
             orient="records"
         )
     }
 
+
+# ============================================================
+# ROOT
+# ============================================================
+
+@app.get("/")
+def root():
+
+    return {
+        "message": "Karachi AQI Predictor API is running"
+    }
+
+
+# ============================================================
+# PREDICTION API
+# ============================================================
+
+@app.get("/predict")
+def get_prediction():
+
+    global _prediction_cache
+    global _prediction_cache_time
+    global _hopsworks_project
+
+    now = time.time()
+
     # --------------------------------------------------------
-    # Store history in cache.
+    # CACHE HIT
+    # --------------------------------------------------------
+
+    if (
+        _prediction_cache is not None
+        and now - _prediction_cache_time < CACHE_TTL
+    ):
+
+        print(
+            "Returning cached saved prediction."
+        )
+
+        return _prediction_cache
+
+    # --------------------------------------------------------
+    # CACHE MISS
+    # --------------------------------------------------------
+
+    print(
+        "Reading latest saved prediction from Hopsworks..."
+    )
+
+    if _hopsworks_project is None:
+
+        _hopsworks_project = (
+            connect_to_hopsworks()
+        )
+
+    result = read_latest_prediction(
+        _hopsworks_project
+    )
+
+    _prediction_cache = result
+    _prediction_cache_time = now
+
+    return result
+
+
+# ============================================================
+# CURRENT AQI API
+# ============================================================
+
+@app.get("/current")
+def get_current():
+
+    global _current_cache
+    global _current_cache_time
+    global _hopsworks_project
+
+    now = time.time()
+
+    # --------------------------------------------------------
+    # CACHE HIT
+    # --------------------------------------------------------
+
+    if (
+        _current_cache is not None
+        and now - _current_cache_time < CACHE_TTL
+    ):
+
+        print(
+            "Returning cached current AQI."
+        )
+
+        return _current_cache
+
+    # --------------------------------------------------------
+    # CACHE MISS
+    # --------------------------------------------------------
+
+    print(
+        "Reading fresh current AQI..."
+    )
+
+    if _hopsworks_project is None:
+
+        _hopsworks_project = (
+            connect_to_hopsworks()
+        )
+
+    feature_row = get_latest_v6_row(
+        _hopsworks_project
+    )
+
+    current_aqi = float(
+        feature_row[
+            "target_aqi"
+        ].iloc[0]
+    )
+
+    result = {
+        "timestamp": feature_row[
+            "timestamp"
+        ].iloc[0],
+
+        "current_aqi": current_aqi,
+
+        "alert": get_aqi_alert(
+            current_aqi
+        ),
+    }
+
+    _current_cache = result
+    _current_cache_time = now
+
+    return result
+
+
+# ============================================================
+# HISTORY API
+# ============================================================
+
+@app.get("/history")
+def get_history():
+
+    global _history_cache
+    global _history_cache_time
+    global _hopsworks_project
+
+    now = time.time()
+
+    # --------------------------------------------------------
+    # CACHE HIT
+    # --------------------------------------------------------
+
+    if (
+        _history_cache is not None
+        and now - _history_cache_time < CACHE_TTL
+    ):
+
+        print(
+            "Returning cached history."
+        )
+
+        return _history_cache
+
+    # --------------------------------------------------------
+    # CACHE MISS
+    # --------------------------------------------------------
+
+    print(
+        "History cache miss - loading from Hopsworks..."
+    )
+
+    if _hopsworks_project is None:
+
+        _hopsworks_project = (
+            connect_to_hopsworks()
+        )
+
+    result = read_history(
+        _hopsworks_project
+    )
+
+    # --------------------------------------------------------
+    # CACHE RESULT
     # --------------------------------------------------------
 
     _history_cache = result
-    _history_cache_time = now_time
+    _history_cache_time = now
+
+    print(
+        "--- 90-day history cached successfully ---"
+    )
 
     return result
