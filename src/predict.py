@@ -869,6 +869,9 @@ def predict():
 
     return {
         "timestamp": latest_timestamp,
+        "current_aqi": float(
+        feature_row["target_aqi"].iloc[0]
+        ),
         "day1": day1_prediction,
         "day2": day2_prediction,
         "day3": day3_prediction,

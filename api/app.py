@@ -48,10 +48,46 @@ _history_cache_time = 0
 @app.on_event("startup")
 async def startup_event():
     """
-    Establish Hopsworks connection once when FastAPI starts.
+    Initialize Hopsworks and warm up API caches once.
     """
 
-    connect_to_hopsworks()
+    global _prediction_cache
+    global _prediction_cache_time
+    global _current_cache
+    global _current_cache_time
+
+    print("\n--- Warming up API caches ---")
+
+    # Connect once
+    project = connect_to_hopsworks()
+
+    # --------------------------------------------------------
+    # Warm current AQI cache
+    # --------------------------------------------------------
+
+    print("Loading latest AQI...")
+
+    feature_row = get_latest_v6_row(project)
+
+    _current_cache = {
+        "timestamp": feature_row["timestamp"].iloc[0],
+        "current_aqi": float(
+            feature_row["target_aqi"].iloc[0]
+        ),
+    }
+
+    _current_cache_time = time.time()
+
+    # --------------------------------------------------------
+    # Warm prediction cache
+    # --------------------------------------------------------
+
+    print("Generating initial prediction...")
+
+    _prediction_cache = predict()
+    _prediction_cache_time = time.time()
+
+    print("--- API cache warm-up complete ---\n")
 
 
 # ============================================================
