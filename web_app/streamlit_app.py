@@ -8,7 +8,10 @@ from datetime import datetime, timedelta
 # CONFIGURATION
 # ============================================================
 
-API_URL = "http://127.0.0.1:8000/predict"
+API_BASE_URL = "http://127.0.0.1:8000"
+PREDICTION_API = f"{API_BASE_URL}/predict"
+CURRENT_API = f"{API_BASE_URL}/current"
+
 REQUEST_TIMEOUT = 120
 
 
@@ -358,7 +361,7 @@ st.html(
     }}
 
     /* ========================================================
-       EDA CARDS
+       EDA
        ======================================================== */
 
     .eda-stat {{
@@ -514,6 +517,9 @@ st.html(
 # ============================================================
 
 def get_aqi_band(aqi):
+
+    aqi = float(aqi)
+
     for low, high, label, color in AQI_BANDS:
         if low <= aqi < high:
             return label, color
@@ -522,8 +528,21 @@ def get_aqi_band(aqi):
 
 
 def get_predictions():
+
     response = requests.get(
-        API_URL,
+        PREDICTION_API,
+        timeout=REQUEST_TIMEOUT,
+    )
+
+    response.raise_for_status()
+
+    return response.json()
+
+
+def get_current_aqi():
+
+    response = requests.get(
+        CURRENT_API,
         timeout=REQUEST_TIMEOUT,
     )
 
@@ -533,6 +552,7 @@ def get_predictions():
 
 
 def is_valid_prediction_payload(data):
+
     if not isinstance(data, dict):
         return False
 
@@ -541,16 +561,23 @@ def is_valid_prediction_payload(data):
 
     required_keys = [
         "timestamp",
+        "current_aqi",
         "day1",
         "day2",
         "day3",
     ]
 
-    return all(key in data for key in required_keys)
+    return all(
+        key in data
+        for key in required_keys
+    )
 
 
 def get_valid_prediction_data():
-    data = st.session_state.get("prediction")
+
+    data = st.session_state.get(
+        "prediction"
+    )
 
     if not is_valid_prediction_payload(data):
         return None
@@ -559,28 +586,95 @@ def get_valid_prediction_data():
 
 
 def format_base_timestamp(ts_str):
+
     try:
-        dt = datetime.fromisoformat(ts_str)
+
+        dt = datetime.fromisoformat(
+            str(ts_str)
+        )
 
         return dt.strftime(
-            "%a, %d %b %Y · %H:%M UTC%z"
+            "%a, %d %b %Y · %H:%M UTC"
         )
 
     except Exception:
-        return ts_str
+
+        return str(ts_str)
 
 
-def forecast_date_label(base_ts_str, day_offset):
+def forecast_date_label(
+    base_ts_str,
+    day_offset,
+):
+
     try:
-        dt = (
-            datetime.fromisoformat(base_ts_str)
-            + timedelta(days=day_offset)
+
+        dt = datetime.fromisoformat(
+            str(base_ts_str)
         )
 
-        return dt.strftime("%d %b")
+        return (
+            dt + timedelta(
+                days=day_offset
+            )
+        ).strftime("%d %b")
 
     except Exception:
+
         return f"Day +{day_offset}"
+
+
+# ============================================================
+# HEALTH GUIDANCE
+# ============================================================
+
+def get_health_guidance(aqi):
+
+    category, color = get_aqi_band(aqi)
+
+    if aqi < 50:
+
+        message = (
+            "Air quality is good. "
+            "Normal outdoor activities are suitable."
+        )
+
+    elif aqi < 100:
+
+        message = (
+            "Air quality is acceptable. "
+            "Sensitive individuals should monitor conditions."
+        )
+
+    elif aqi < 150:
+
+        message = (
+            "Sensitive groups should reduce prolonged "
+            "or heavy outdoor activity."
+        )
+
+    elif aqi < 200:
+
+        message = (
+            "Everyone may begin to experience health effects. "
+            "Consider reducing outdoor exposure."
+        )
+
+    elif aqi < 300:
+
+        message = (
+            "Health alert. Everyone should avoid prolonged "
+            "outdoor exposure where possible."
+        )
+
+    else:
+
+        message = (
+            "Health emergency conditions. "
+            "Avoid outdoor exposure and follow local guidance."
+        )
+
+    return category, color, message
 
 
 # ============================================================
@@ -589,47 +683,36 @@ def forecast_date_label(base_ts_str, day_offset):
 
 def initialize_dashboard_data():
 
-    if (
-        "prediction" not in st.session_state
-        and "attempted_prediction_load" not in st.session_state
-    ):
+    try:
+        data = get_predictions()
 
-        st.session_state["attempted_prediction_load"] = True
-
-        try:
-            data = get_predictions()
-
-            if not isinstance(data, dict):
-                st.session_state["prediction_error"] = (
-                    "Latest prediction is temporarily unavailable. "
-                    "Please try again shortly."
-                )
-                return
-
-            if "error" in data:
-                st.session_state["prediction_error"] = (
-                    "Latest prediction is temporarily unavailable. "
-                    "Please try again shortly."
-                )
-                return
-
-            if not is_valid_prediction_payload(data):
-                st.session_state["prediction_error"] = (
-                    "Latest prediction is temporarily unavailable. "
-                    "Please try again shortly."
-                )
-                return
-
-            st.session_state["prediction"] = data
-
-        except Exception:
-
+        if not isinstance(data, dict):
+            st.session_state["prediction"] = None
             st.session_state["prediction_error"] = (
-                "Latest prediction is temporarily unavailable. "
-                "Please try again shortly."
+                "Invalid prediction response."
             )
+            return
 
+        if "error" in data:
+            st.session_state["prediction"] = None
+            st.session_state["prediction_error"] = data["error"]
+            return
 
+        if not is_valid_prediction_payload(data):
+            st.session_state["prediction"] = None
+            st.session_state["prediction_error"] = (
+                "Prediction data is incomplete."
+            )
+            return
+
+        # SAVE LATEST API DATA
+        st.session_state["prediction"] = data
+        st.session_state["prediction_error"] = None
+
+    except Exception as e:
+
+        st.session_state["prediction"] = None
+        st.session_state["prediction_error"] = str(e)
 # ============================================================
 # SIDEBAR
 # ============================================================
@@ -698,9 +781,13 @@ def render_hero():
             start=1,
         ):
 
-            value = data[key]
+            value = float(
+                data[key]
+            )
 
-            _, color = get_aqi_band(value)
+            _, color = get_aqi_band(
+                value
+            )
 
             pills_html += (
                 f'<div class="hero-pill">'
@@ -719,15 +806,20 @@ def render_hero():
     else:
 
         pills_html = "".join(
-            f'<div class="hero-pill">'
-            f'<div class="hero-pill-label">'
-            f'Day +{i}'
-            f'</div>'
-            f'<div class="hero-pill-value" '
-            f'style="color:{HERO_MUTED};">'
-            f'--'
-            f'</div>'
-            f'</div>'
+            f"""
+            <div class="hero-pill">
+
+                <div class="hero-pill-label">
+                    Day +{i}
+                </div>
+
+                <div class="hero-pill-value"
+                     style="color:{HERO_MUTED};">
+                    --
+                </div>
+
+            </div>
+            """
             for i in range(1, 4)
         )
 
@@ -746,9 +838,9 @@ def render_hero():
                 </div>
 
                 <div class="hero-subtitle">
-                    Predicting Karachi's Air Quality Index for the
-                    next 3 days using an automated machine learning
-                    pipeline.
+                    Predicting Karachi's Air Quality Index
+                    for the next 3 days using an automated
+                    machine learning pipeline.
                 </div>
 
                 <div class="hero-pill-row">
@@ -763,136 +855,8 @@ def render_hero():
 
 
 # ============================================================
-# OVERVIEW PAGE
+# FORECAST CHART
 # ============================================================
-
-def render_overview_page(data):
-
-    if not is_valid_prediction_payload(data):
-        st.warning(
-            "Latest prediction is temporarily unavailable. "
-            "Please try again shortly."
-        )
-        return
-
-    aqi = data["current_aqi"]
-    timestamp = data["timestamp"]
-
-    category, color = get_aqi_band(aqi)
-
-    st.html(
-        """
-        <div class="section-inner"
-             style="padding-top:2.8rem;">
-
-            <div class="section-eyebrow">
-                Overview
-            </div>
-
-            <div class="section-title">
-                Current air quality
-            </div>
-
-            <div class="section-desc">
-                Latest observed AQI followed by the current
-                3-day forecasting status.
-            </div>
-
-        </div>
-        """
-    )
-
-    st.html('<div class="section-inner">')
-
-    c1, c2, c3 = st.columns(3)
-
-    c1.metric(
-        "Current AQI",
-        f"{aqi:.1f}",
-        category,
-    )
-
-    c2.metric(
-        "Latest observation",
-        format_base_timestamp(timestamp),
-    )
-
-    peak = max(
-        data["day1"],
-        data["day2"],
-        data["day3"],
-    )
-
-    peak_category, _ = get_aqi_band(peak)
-
-    c3.metric(
-        "Peak 3-day forecast",
-        f"{peak:.1f}",
-        peak_category,
-    )
-
-    st.html("</div>")
-
-    render_forecast_chart(data)
-
-
-# ============================================================
-# FORECAST PAGE
-# ============================================================
-
-def render_forecast_card(
-    label,
-    value,
-    base_ts,
-    day_offset,
-):
-
-    category, color = get_aqi_band(value)
-
-    marker_pct = min(
-        max(
-            value / AQI_MAX_SCALE * 100,
-            1,
-        ),
-        99,
-    )
-
-    date_label = forecast_date_label(
-        base_ts,
-        day_offset,
-    )
-
-    return f"""
-    <div class="forecast-card"
-         style="--band-color:{color};">
-
-        <div class="forecast-label">
-            {label}
-        </div>
-
-        <div class="forecast-value">
-            {value:.1f}
-        </div>
-
-        <div class="forecast-category">
-            {category}
-        </div>
-
-        <div class="spectrum-track">
-
-            <div class="spectrum-marker"
-                 style="left:{marker_pct}%;">
-            </div>
-
-        </div>
-
-        <div class="forecast-date">
-            Forecast for ~ {date_label}
-        </div>
-
-    </div>
-    """
-
 
 def render_forecast_chart(data):
 
@@ -903,9 +867,9 @@ def render_forecast_chart(data):
     ]
 
     values = [
-        data["day1"],
-        data["day2"],
-        data["day3"],
+        float(data["day1"]),
+        float(data["day2"]),
+        float(data["day3"]),
     ]
 
     fig = go.Figure()
@@ -981,21 +945,308 @@ def render_forecast_chart(data):
         showlegend=False,
     )
 
-    with st.container(border=True):
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+    )
 
-        st.plotly_chart(
-            fig,
-            use_container_width=True,
+
+# ============================================================
+# FORECAST CARD
+# ============================================================
+
+def render_forecast_card(
+    label,
+    value,
+    base_ts,
+    day_offset,
+):
+
+    category, color = get_aqi_band(
+        value
+    )
+
+    marker_pct = min(
+        max(
+            float(value)
+            / AQI_MAX_SCALE
+            * 100,
+            1,
+        ),
+        99,
+    )
+
+    date_label = forecast_date_label(
+        base_ts,
+        day_offset,
+    )
+
+    return f"""
+    <div class="forecast-card"
+         style="--band-color:{color};">
+
+        <div class="forecast-label">
+            {label}
+        </div>
+
+        <div class="forecast-value">
+            {float(value):.1f}
+        </div>
+
+        <div class="forecast-category">
+            {category}
+        </div>
+
+        <div class="spectrum-track">
+
+            <div class="spectrum-marker"
+                 style="left:{marker_pct}%;">
+            </div>
+
+        </div>
+
+        <div class="forecast-date">
+            Forecast for ~ {date_label}
+        </div>
+
+    </div>
+    """
+
+
+# ============================================================
+# OVERVIEW PAGE
+# ============================================================
+
+def render_overview_page(data):
+
+    if not is_valid_prediction_payload(data):
+
+        st.warning(
+            "Latest prediction is temporarily unavailable."
         )
 
+        return
+
+    current_data = st.session_state.get(
+        "current_aqi"
+    )
+
+    if (
+        current_data
+        and "current_aqi"
+        in current_data
+    ):
+
+        current_aqi = float(
+            current_data["current_aqi"]
+        )
+
+        current_timestamp = current_data[
+            "timestamp"
+        ]
+
+    else:
+
+        current_aqi = float(
+            data["current_aqi"]
+        )
+
+        current_timestamp = data[
+            "timestamp"
+        ]
+
+    category, color = get_aqi_band(
+        current_aqi
+    )
+
+    # --------------------------------------------------------
+    # Header
+    # --------------------------------------------------------
+
+    st.html(
+        """
+        <div class="section-inner"
+             style="padding-top:2.8rem;">
+
+            <div class="section-eyebrow">
+                Overview
+            </div>
+
+            <div class="section-title">
+                Current air quality
+            </div>
+
+            <div class="section-desc">
+                Latest observed AQI and automated
+                3-day forecasting status.
+            </div>
+
+        </div>
+        """
+    )
+
+    # --------------------------------------------------------
+    # Current AQI + Forecast Summary
+    # --------------------------------------------------------
+
+    st.html(
+        '<div class="section-inner">'
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+
+        st.metric(
+            "Current AQI",
+            f"{current_aqi:.1f}",
+            category,
+        )
+
+    with c2:
+
+        st.metric(
+            "Latest observation",
+            format_base_timestamp(
+                str(current_timestamp)
+            ),
+        )
+
+    peak = max(
+        float(data["day1"]),
+        float(data["day2"]),
+        float(data["day3"]),
+    )
+
+    peak_category, _ = get_aqi_band(
+        peak
+    )
+
+    with c3:
+
+        st.metric(
+            "Peak 3-day forecast",
+            f"{peak:.1f}",
+            peak_category,
+        )
+
+    st.html("</div>")
+
+    # --------------------------------------------------------
+    # Forecast cards
+    # --------------------------------------------------------
+
+    st.html(
+        """
+        <div class="section-inner"
+             style="padding-top:2.8rem;">
+
+            <div class="section-eyebrow">
+                Automated Forecast
+            </div>
+
+            <div class="section-title">
+                Next 3 days
+            </div>
+
+        </div>
+        """
+    )
+
+    st.html(
+        '<div class="section-inner">'
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    cards = [
+        (
+            c1,
+            "Day +1",
+            data["day1"],
+            1,
+        ),
+        (
+            c2,
+            "Day +2",
+            data["day2"],
+            2,
+        ),
+        (
+            c3,
+            "Day +3",
+            data["day3"],
+            3,
+        ),
+    ]
+
+    for column, label, value, offset in cards:
+
+        with column:
+
+            st.html(
+                render_forecast_card(
+                    label,
+                    value,
+                    data["timestamp"],
+                    offset,
+                )
+            )
+
+    st.html("</div>")
+
+    # --------------------------------------------------------
+    # Forecast chart
+    # --------------------------------------------------------
+
+    st.html(
+        """
+        <div class="section-inner"
+             style="padding-top:2.8rem;">
+
+            <div class="section-eyebrow">
+                Forecast Trend
+            </div>
+
+            <div class="section-title">
+                Expected AQI movement
+            </div>
+
+        </div>
+        """
+    )
+
+    st.html(
+        '<div class="section-inner">'
+    )
+
+    with st.container(border=True):
+
+        render_forecast_chart(data)
+
+    st.html("</div>")
+
+    # --------------------------------------------------------
+    # Health guidance
+    # --------------------------------------------------------
+
+    render_alert_section(
+        data
+    )
+
+
+# ============================================================
+# FORECAST PAGE
+# ============================================================
 
 def render_forecast_page(data):
 
     if not is_valid_prediction_payload(data):
+
         st.warning(
-            "Latest prediction is temporarily unavailable. "
-            "Please try again shortly."
+            "Latest prediction is temporarily unavailable."
         )
+
         return
 
     st.html(
@@ -1012,49 +1263,54 @@ def render_forecast_page(data):
             </div>
 
             <div class="section-desc">
-                Direct predictions produced by the production
-                inference pipeline.
+                Predictions read directly from the automated
+                prediction Feature Group through the FastAPI
+                service.
             </div>
 
         </div>
         """
     )
 
-    st.html('<div class="section-inner">')
+    st.html(
+        '<div class="section-inner">'
+    )
 
     c1, c2, c3 = st.columns(3)
 
-    c1.html = None
+    cards = [
+        (
+            c1,
+            "Day +1",
+            data["day1"],
+            1,
+        ),
+        (
+            c2,
+            "Day +2",
+            data["day2"],
+            2,
+        ),
+        (
+            c3,
+            "Day +3",
+            data["day3"],
+            3,
+        ),
+    ]
 
-    with c1:
-        st.html(
-            render_forecast_card(
-                "Day +1",
-                data["day1"],
-                data["timestamp"],
-                1,
-            )
-        )
+    for column, label, value, offset in cards:
 
-    with c2:
-        st.html(
-            render_forecast_card(
-                "Day +2",
-                data["day2"],
-                data["timestamp"],
-                2,
-            )
-        )
+        with column:
 
-    with c3:
-        st.html(
-            render_forecast_card(
-                "Day +3",
-                data["day3"],
-                data["timestamp"],
-                3,
+            st.html(
+                render_forecast_card(
+                    label,
+                    value,
+                    data["timestamp"],
+                    offset,
+                )
             )
-        )
 
     st.html("</div>")
 
@@ -1075,9 +1331,13 @@ def render_forecast_page(data):
         """
     )
 
-    st.html('<div class="section-inner">')
+    st.html(
+        '<div class="section-inner">'
+    )
 
-    render_forecast_chart(data)
+    with st.container(border=True):
+
+        render_forecast_chart(data)
 
     st.html("</div>")
 
@@ -1085,17 +1345,10 @@ def render_forecast_page(data):
 
 
 # ============================================================
-# ALERTS
+# HEALTH ALERTS
 # ============================================================
 
 def render_alert_section(data):
-
-    if not is_valid_prediction_payload(data):
-        st.warning(
-            "Latest prediction is temporarily unavailable. "
-            "Please try again shortly."
-        )
-        return
 
     st.html(
         """
@@ -1111,8 +1364,7 @@ def render_alert_section(data):
             </div>
 
             <div class="section-desc">
-                Health guidance generated by the prediction API
-                according to forecast AQI levels.
+                Guidance based on the predicted AQI level.
             </div>
 
         </div>
@@ -1121,70 +1373,38 @@ def render_alert_section(data):
 
     columns = st.columns(3)
 
-    alert_columns = [
-        ("Day +1", "day1_alert"),
-        ("Day +2", "day2_alert"),
-        ("Day +3", "day3_alert"),
+    forecast_items = [
+        (
+            columns[0],
+            "Day +1",
+            data["day1"],
+        ),
+        (
+            columns[1],
+            "Day +2",
+            data["day2"],
+        ),
+        (
+            columns[2],
+            "Day +3",
+            data["day3"],
+        ),
     ]
 
-    for column, (
-        day_label,
-        alert_key,
-    ) in zip(
-        columns,
-        alert_columns,
-    ):
+    for column, day_label, value in forecast_items:
 
-        alert = data.get(alert_key)
-
-        if not alert:
-            continue
-
-        category = alert.get(
-            "category",
-            "Unknown",
+        category, color, message = (
+            get_health_guidance(
+                float(value)
+            )
         )
-
-        level = alert.get(
-            "level",
-            "unknown",
-        )
-
-        message = alert.get(
-            "message",
-            "No health guidance available.",
-        )
-
-        if level == "good":
-            alert_color = AQI_BANDS[0][3]
-
-        elif level == "moderate":
-            alert_color = AQI_BANDS[1][3]
-
-        elif level in [
-            "unhealthy_sensitive",
-            "unhealthy for sensitive groups",
-        ]:
-            alert_color = AQI_BANDS[2][3]
-
-        elif level == "unhealthy":
-            alert_color = AQI_BANDS[3][3]
-
-        elif level == "very_unhealthy":
-            alert_color = AQI_BANDS[4][3]
-
-        elif level == "hazardous":
-            alert_color = AQI_BANDS[5][3]
-
-        else:
-            alert_color = TEXT_MUTED
 
         with column:
 
             st.html(
                 f"""
                 <div class="alert-card"
-                     style="--alert-color:{alert_color};">
+                     style="--alert-color:{color};">
 
                     <div style="
                         color:{TEXT_DARK};
@@ -1196,7 +1416,7 @@ def render_alert_section(data):
                     </div>
 
                     <div style="
-                        color:{alert_color};
+                        color:{color};
                         font-weight:700;
                         font-size:1rem;
                         margin-bottom:0.35rem;
@@ -1218,7 +1438,7 @@ def render_alert_section(data):
 
 
 # ============================================================
-# STATIC EDA PAGE
+# EDA PAGE
 # ============================================================
 
 def render_eda_page():
@@ -1237,16 +1457,17 @@ def render_eda_page():
             </div>
 
             <div class="section-desc">
-                A visual summary of the historical dataset,
-                feature engineering pipeline, and AQI modelling
-                inputs used by the project.
+                Historical dataset, feature engineering pipeline
+                and modelling inputs.
             </div>
 
         </div>
         """
     )
 
-    st.html('<div class="section-inner">')
+    st.html(
+        '<div class="section-inner">'
+    )
 
     c1, c2, c3, c4 = st.columns(4)
 
@@ -1303,30 +1524,11 @@ def render_eda_page():
 
     st.html("</div>")
 
-    st.html(
-        """
-        <div class="section-inner"
-             style="padding-top:2.8rem;">
+    # --------------------------------------------------------
+    # Feature engineering chart
+    # --------------------------------------------------------
 
-            <div class="section-eyebrow">
-                Feature Engineering
-            </div>
-
-            <div class="section-title">
-                From raw observations to ML features
-            </div>
-
-            <div class="section-desc">
-                The project transforms hourly weather and pollutant
-                observations into a canonical set of 100 model-ready
-                features.
-            </div>
-
-        </div>
-        """
-    )
-
-    feature_labels = [
+    labels = [
         "Raw observations",
         "Temporal features",
         "Lag features",
@@ -1334,7 +1536,7 @@ def render_eda_page():
         "100 model features",
     ]
 
-    feature_values = [
+    values = [
         11,
         12,
         7,
@@ -1346,9 +1548,9 @@ def render_eda_page():
 
     fig.add_trace(
         go.Bar(
-            x=feature_labels,
-            y=feature_values,
-            text=feature_values,
+            x=labels,
+            y=values,
+            text=values,
             textposition="outside",
         )
     )
@@ -1362,23 +1564,16 @@ def render_eda_page():
             color=TEXT_MUTED,
         ),
         height=360,
-        margin=dict(
-            l=20,
-            r=20,
-            t=60,
-            b=20,
-        ),
         yaxis=dict(
             title="Feature / variable count",
             gridcolor=CARD_BORDER,
         ),
-        xaxis=dict(
-            gridcolor="rgba(0,0,0,0)",
-        ),
         showlegend=False,
     )
 
-    st.html('<div class="section-inner">')
+    st.html(
+        '<div class="section-inner">'
+    )
 
     with st.container(border=True):
 
@@ -1388,6 +1583,10 @@ def render_eda_page():
         )
 
     st.html("</div>")
+
+    # --------------------------------------------------------
+    # Insights
+    # --------------------------------------------------------
 
     st.html(
         """
@@ -1409,17 +1608,19 @@ def render_eda_page():
     c1, c2, c3 = st.columns(3)
 
     with c1:
+
         st.info(
             """
             **Temporal structure**
 
             AQI is an hourly time-series problem.
-            Historical lag and rolling-window features
-            capture recent air-quality behaviour.
+            Lag and rolling features capture recent
+            air-quality behaviour.
             """
         )
 
     with c2:
+
         st.info(
             """
             **Historical context**
@@ -1430,32 +1631,19 @@ def render_eda_page():
         )
 
     with c3:
+
         st.info(
             """
             **Feature richness**
 
             Weather, pollutant, temporal, lag and rolling
-            features are combined into the canonical
-            100-feature model contract.
+            features form the canonical 100-feature contract.
             """
         )
 
-    st.html(
-        """
-        <div class="section-inner"
-             style="padding-top:2.8rem;">
-
-            <div class="section-eyebrow">
-                Feature Groups
-            </div>
-
-            <div class="section-title">
-                What's inside the model input
-            </div>
-
-        </div>
-        """
-    )
+    # --------------------------------------------------------
+    # Feature groups
+    # --------------------------------------------------------
 
     feature_groups = {
         "Pollutants": 5,
@@ -1469,9 +1657,15 @@ def render_eda_page():
 
     fig.add_trace(
         go.Bar(
-            x=list(feature_groups.keys()),
-            y=list(feature_groups.values()),
-            text=list(feature_groups.values()),
+            x=list(
+                feature_groups.keys()
+            ),
+            y=list(
+                feature_groups.values()
+            ),
+            text=list(
+                feature_groups.values()
+            ),
             textposition="outside",
         )
     )
@@ -1485,12 +1679,6 @@ def render_eda_page():
             color=TEXT_MUTED,
         ),
         height=340,
-        margin=dict(
-            l=20,
-            r=20,
-            t=60,
-            b=20,
-        ),
         yaxis=dict(
             title="Feature count",
             gridcolor=CARD_BORDER,
@@ -1498,7 +1686,9 @@ def render_eda_page():
         showlegend=False,
     )
 
-    st.html('<div class="section-inner">')
+    st.html(
+        '<div class="section-inner">'
+    )
 
     with st.container(border=True):
 
@@ -1508,11 +1698,6 @@ def render_eda_page():
         )
 
     st.html("</div>")
-
-    st.caption(
-        "EDA is presented as a static analytical view inside "
-        "the dashboard; it does not call the prediction API."
-    )
 
 
 # ============================================================
@@ -1535,8 +1720,7 @@ def render_models_page(data):
             </div>
 
             <div class="section-desc">
-                Each forecast horizon has its own registered
-                production model.
+                Each forecast horizon has its own production model.
             </div>
 
         </div>
@@ -1618,7 +1802,7 @@ def render_architecture_page():
             </div>
 
             <div class="section-desc">
-                End-to-end flow from external data sources to
+                End-to-end flow from data collection to
                 the final 3-day AQI forecast.
             </div>
 
@@ -1648,14 +1832,19 @@ def render_architecture_page():
             "use Ridge Regression."
         ),
         (
+            "Prediction Automation",
+            "Predictions for all three horizons are automatically "
+            "saved into the prediction Feature Group."
+        ),
+        (
             "FastAPI",
-            "The production inference API loads the registered "
-            "models and generates predictions."
+            "The API reads the latest automated prediction "
+            "from Hopsworks."
         ),
         (
             "Streamlit",
-            "This dashboard presents forecasts, alerts, model "
-            "information and EDA insights."
+            "The dashboard displays current AQI, forecasts, "
+            "alerts and model information."
         ),
     ]
 
@@ -1755,7 +1944,9 @@ if selected_page == "Overview":
 
     data = get_valid_prediction_data()
 
-    render_overview_page(data)
+    render_overview_page(
+        data
+    )
 
 
 elif selected_page == "3-Day Forecast":
@@ -1764,7 +1955,9 @@ elif selected_page == "3-Day Forecast":
 
     data = get_valid_prediction_data()
 
-    render_forecast_page(data)
+    render_forecast_page(
+        data
+    )
 
 
 elif selected_page == "EDA & Insights":
@@ -1776,7 +1969,9 @@ elif selected_page == "Models":
 
     data = get_valid_prediction_data()
 
-    render_models_page(data)
+    render_models_page(
+        data
+    )
 
 
 elif selected_page == "Architecture":
