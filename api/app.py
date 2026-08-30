@@ -3,6 +3,7 @@ from src.predict import (
     get_latest_v6_row,
     connect_to_hopsworks,
 )
+from src.explainability import explain_predictions
 import pandas as pd
 import time
 import threading
@@ -37,6 +38,10 @@ _current_cache_time = 0
 
 _history_cache = None
 _history_cache_time = 0
+
+# SHAP explanation cache
+_explainability_cache = None
+_explainability_cache_time = 0
 
 # One Hopsworks connection for the whole API process.
 _hopsworks_project = None
@@ -594,6 +599,58 @@ def get_prediction():
     )
 
     return _prediction_cache
+# ============================================================
+# SHAP EXPLAINABILITY API
+# ============================================================
+@app.get("/explainability")
+def get_explainability():
+
+    global _explainability_cache
+    global _explainability_cache_time
+
+    now = time.time()
+
+    # --------------------------------------------------------
+    # CACHE HIT
+    # --------------------------------------------------------
+
+    if (
+        _explainability_cache is not None
+        and now - _explainability_cache_time < CACHE_TTL
+    ):
+
+        print(
+            "Returning cached SHAP explanation."
+        )
+
+        return _explainability_cache
+
+    # --------------------------------------------------------
+    # CACHE MISS
+    # --------------------------------------------------------
+
+    print(
+        "--- SHAP cache miss - generating explanation... ---"
+    )
+
+    try:
+
+        result = explain_predictions()
+
+        _explainability_cache = result
+        _explainability_cache_time = now
+
+        print(
+            "--- SHAP explanation cached successfully ---"
+        )
+
+        return result
+
+    except Exception as exc:
+
+        return {
+            "error": f"SHAP explanation failed: {exc}"
+        }
 # ============================================================
 # CURRENT AQI API
 # ============================================================

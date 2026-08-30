@@ -680,6 +680,9 @@ def explain_model(
 def explain_predictions():
     """
     Generate SHAP explanations for Day +1, Day +2 and Day +3.
+
+    The latest production v6 features are read ONCE and reused
+    for all three models.
     """
 
     print(
@@ -703,25 +706,102 @@ def explain_predictions():
     )
 
     # -------------------------------------------------------------
-    # Explain all three models
+    # IMPORTANT:
+    # Read v6 features ONLY ONCE.
     # -------------------------------------------------------------
 
-    day1 = explain_model(
-        project,
-        registry,
-        MODEL_NAMES["day1"],
+    dataframe = get_recent_v6_features(
+        project
     )
 
-    day2 = explain_model(
-        project,
-        registry,
-        MODEL_NAMES["day2"],
+    print(
+        "--- Reusing same v6 feature data for all models ---"
     )
 
-    day3 = explain_model(
-        project,
-        registry,
-        MODEL_NAMES["day3"],
+    # -------------------------------------------------------------
+    # Explain all three models using the SAME dataframe
+    # -------------------------------------------------------------
+
+    def explain_with_dataframe(model_name):
+
+        (
+            model,
+            metadata,
+            model_version,
+        ) = load_registered_model(
+            registry,
+            model_name,
+        )
+
+        validate_model_metadata(
+            metadata,
+            model_name,
+        )
+
+        (
+            background,
+            latest_row,
+            feature_columns,
+        ) = prepare_shap_data(
+            dataframe,
+            metadata,
+        )
+
+        prediction = float(
+            model.predict(
+                latest_row
+            )[0]
+        )
+
+        (
+            shap_values,
+            base_value,
+        ) = calculate_shap_values(
+            model=model,
+            background=background,
+            latest_row=latest_row,
+            model_name=model_name,
+        )
+
+        top_features = format_shap_results(
+            feature_names=feature_columns,
+            shap_values=shap_values,
+            latest_row=latest_row,
+        )
+
+        return {
+            "model_name": model_name,
+            "model_version": int(
+                model_version
+            ),
+            "prediction": round(
+                prediction,
+                2,
+            ),
+            "base_value": round(
+                base_value,
+                4,
+            ),
+            "timestamp": dataframe[
+                "timestamp"
+            ].iloc[-1],
+            "features": top_features,
+        }
+
+    # -------------------------------------------------------------
+    # Generate explanations
+    # -------------------------------------------------------------
+
+    day1 = explain_with_dataframe(
+        MODEL_NAMES["day1"]
+    )
+
+    day2 = explain_with_dataframe(
+        MODEL_NAMES["day2"]
+    )
+
+    day3 = explain_with_dataframe(
+        MODEL_NAMES["day3"]
     )
 
     # -------------------------------------------------------------
@@ -730,7 +810,6 @@ def explain_predictions():
 
     result = {
         "timestamp": day1["timestamp"],
-
         "day1": day1,
         "day2": day2,
         "day3": day3,
@@ -741,7 +820,6 @@ def explain_predictions():
     )
 
     return result
-
 
 # =====================================================================
 # STANDALONE EXECUTION
