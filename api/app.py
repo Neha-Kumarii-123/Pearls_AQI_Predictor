@@ -236,7 +236,55 @@ def _warm_up_caches():
     )
 
     print("--- API cache warm-up complete (background) ---\n")
+# ============================================================
+# BACKGROUND PREDICTION CACHE REFRESH
+# ============================================================
 
+def _background_prediction_refresh():
+    """
+    Refresh prediction cache every hour.
+
+    API requests never wait for this refresh.
+    """
+
+    global _hopsworks_project
+    global _prediction_cache
+    global _prediction_cache_time
+
+    while True:
+
+        # Wait one hour before refreshing.
+        time.sleep(CACHE_TTL)
+
+        print("\n--- Hourly prediction cache refresh started ---")
+
+        try:
+
+            if _hopsworks_project is None:
+                _hopsworks_project = connect_to_hopsworks()
+
+            # Read latest prediction already saved by
+            # automate_prediction.py
+            new_prediction = read_latest_prediction(
+                _hopsworks_project
+            )
+
+            _prediction_cache = new_prediction
+            _prediction_cache_time = time.time()
+
+            print(
+                "--- Prediction cache refreshed successfully ---"
+            )
+
+        except Exception as exc:
+
+            print(
+                f"--- Prediction cache refresh failed: {exc} ---"
+            )
+threading.Thread(
+    target=_background_prediction_refresh,
+    daemon=True,
+).start()
 
 # ============================================================
 # READ LATEST SAVED PREDICTION
@@ -532,59 +580,20 @@ def root():
         "message": "Karachi AQI Predictor API is running"
     }
 
-
-# ============================================================
-# PREDICTION API
-# ============================================================
-
 @app.get("/predict")
 def get_prediction():
 
-    global _prediction_cache
-    global _prediction_cache_time
-    global _hopsworks_project
+    if _prediction_cache is None:
 
-    now = time.time()
-
-    # --------------------------------------------------------
-    # CACHE HIT
-    # --------------------------------------------------------
-
-    if (
-        _prediction_cache is not None
-        and now - _prediction_cache_time < CACHE_TTL
-    ):
-
-        print(
-            "Returning cached saved prediction."
-        )
-
-        return _prediction_cache
-
-    # --------------------------------------------------------
-    # CACHE MISS
-    # --------------------------------------------------------
+        return {
+            "error": "Prediction is not available yet. Please try again shortly."
+        }
 
     print(
-        "Reading latest saved prediction from Hopsworks..."
+        "Returning cached saved prediction."
     )
 
-    if _hopsworks_project is None:
-
-        _hopsworks_project = (
-            connect_to_hopsworks()
-        )
-
-    result = read_latest_prediction(
-        _hopsworks_project
-    )
-
-    _prediction_cache = result
-    _prediction_cache_time = now
-
-    return result
-
-
+    return _prediction_cache
 # ============================================================
 # CURRENT AQI API
 # ============================================================

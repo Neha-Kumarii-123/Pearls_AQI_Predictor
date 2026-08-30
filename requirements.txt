@@ -117,3 +117,4 @@ wrapt==2.3.0
 joblib==1.5.0
 scikit-learn
 xgboost
+fastapi
