@@ -44,7 +44,7 @@ async def startup_event():
             _shap_cache = res_shap
             _shap_cache_time = time.time()
             print("--- Startup cache warm-up successful (Predictions + SHAP) ---")
-            
+
         else:
             print(f"Cache warm-up returned error: {result.get('error', 'Unknown error')}")
     except Exception as exc:
@@ -70,7 +70,25 @@ def get_latest_predictions():
         
         if not result or "error" in result:
             return {"error": result.get("error", "Failed to generate live prediction.")}
-            
+
+        # --- Industrial Alert Evaluation Logic ---
+        current = float(result.get("current_aqi", 0))
+        d1 = float(result.get("day1", 0))
+        d2 = float(result.get("day2", 0))
+        d3 = float(result.get("day3", 0))
+        
+        # Threshold for Hazardous / Severe Warning (e.g., > 300)
+        is_hazardous = current > 300 or d1 > 300 or d2 > 300 or d3 > 300
+        
+        alert_message = None
+        if is_hazardous:
+            alert_message = "CRITICAL ALERT: Hazardous air quality levels detected or forecasted! Sensitive groups and general public should avoid outdoor activities."
+        
+        result["alert"] = {
+            "is_hazardous": is_hazardous,
+            "message": alert_message
+        }
+        # ----------------------------------------   
         # Update cache store and timestamp
         _prediction_cache = result
         _prediction_cache_time = now

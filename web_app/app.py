@@ -583,7 +583,13 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("<div class='nav-item'>🧩&nbsp;&nbsp;ML Pipelines</div>", unsafe_allow_html=True)
-    st.markdown("<div class='nav-item'>🗄️&nbsp;&nbsp;Model Registry</div>", unsafe_allow_html=True)
+
+    if st.session_state.page == "registry":
+        st.markdown("<div class='nav-item-active'>🗄️&nbsp;&nbsp;Model Registry</div>", unsafe_allow_html=True)
+    else:
+        if st.button("🗄️  Model Registry", key="nav_registry", use_container_width=True):
+            st.session_state.page = "registry"
+            st.rerun()
 
     if st.session_state.page == "global":
         with st.expander("⚙️ API Settings"):
@@ -636,6 +642,79 @@ if st.session_state.page == "eda":
                 f"</div>",
                 unsafe_allow_html=True,
             )
+
+    st.markdown(
+        f"""
+        <div class="footer-text" style="display:flex;justify-content:space-between;">
+            <span>© {datetime.now().year} Pearls AQI Predictor • Advanced Air Quality Monitoring & 3-Day Forecasting</span>
+            <span>Privacy Policy &nbsp;•&nbsp; Terms of Service &nbsp;•&nbsp; System Status</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.stop()
+
+if st.session_state.page == "registry":
+    # ============================================================
+    # MODEL REGISTRY PAGE
+    # ============================================================
+    top_l, top_r = st.columns([3, 1])
+    with top_l:
+        st.markdown(
+            "<div class='eda-breadcrumb'>DASHBOARD &nbsp;›&nbsp; "
+            "<span class='active'>MODEL REGISTRY</span></div>"
+            "<div class='eda-title'>Model Registry</div>"
+            "<div class='eda-subtitle'>Versioned models currently powering each forecast horizon, "
+            "including algorithm type and registration status.</div>",
+            unsafe_allow_html=True,
+        )
+    with top_r:
+        st.markdown("<div style='padding-top:10px;'></div>", unsafe_allow_html=True)
+        if st.button("← Back to Global View", key="back_to_global_registry", use_container_width=True):
+            st.session_state.page = "global"
+            st.rerun()
+
+    registry_data = None
+    registry_error = None
+    try:
+        registry_data = fetch_predictions(st.session_state.api_url, st.session_state.fetch_nonce)
+        if isinstance(registry_data, dict) and "error" in registry_data:
+            registry_error = registry_data["error"]
+            registry_data = None
+    except requests.exceptions.ConnectionError:
+        registry_error = f"Couldn't reach the API at **{st.session_state.api_url}**."
+    except requests.exceptions.Timeout:
+        registry_error = "The API request timed out. Try refreshing from the Global Monitoring page."
+    except Exception as exc:
+        registry_error = f"API returned an error: {exc}"
+
+    if registry_error:
+        st.error(registry_error)
+    elif registry_data:
+        reg_cols = st.columns(3)
+        registry_rows = [
+            ("day1", "Day +1 Model", "24H Horizon"),
+            ("day2", "Day +2 Model", "48H Horizon"),
+            ("day3", "Day +3 Model", "72H Horizon"),
+        ]
+        for col, (key, day_label, horizon_label) in zip(reg_cols, registry_rows):
+            version = registry_data.get(f"{key}_model_version", "—")
+            with col:
+                st.markdown(
+                    f"""
+                    <div class="aqi-card" style="min-height:200px;">
+                        <span class="version-badge">v{version}</span>
+                        <div class="model-name" style="font-size:18px;margin-top:4px;">{day_label}</div>
+                        <div class="model-sub">{MODEL_TYPES[key]} • Registered</div>
+                        <div class="aqi-divider"></div>
+                        <div class="aqi-footer-row">
+                            <span>{horizon_label}</span>
+                            <span style="color:#34d399;font-weight:600;">Active</span>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
     st.markdown(
         f"""
@@ -792,82 +871,54 @@ with col2:
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ============================================================
-# ROW 2 — TRAJECTORY CHART + MODEL REGISTRY
+# ROW 2 — TRAJECTORY CHART (Full Width)
 # ============================================================
-col3, col4 = st.columns([1.7, 1])
-
-with col3:
-    st.markdown(
-        """
-        <div class="aqi-card">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-                <div class="aqi-card-title" style="margin-bottom:0;">📈 3-Day Trajectory Forecast</div>
-                <span class="top-badge" style="color:#34d399;border-color:#34d39955;">AQI Overall</span>
-            </div>
-            <div class="aqi-card-subtitle" style="margin-bottom:4px;">
-                Live reading plus model forecasts for the next 3 days
-            </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    x_labels = ["Now", "Day +1", "Day +2", "Day +3"]
-    y_values = [current_aqi, day1, day2, day3]
-    point_colors = [get_aqi_category(v)[2] for v in y_values]
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=x_labels,
-            y=y_values,
-            mode="lines+markers+text",
-            line=dict(color="#34d399", width=3, shape="spline", smoothing=1.1),
-            marker=dict(size=16, color=point_colors, line=dict(width=2, color=colors["bg_card"])),
-            text=[f"{v:.0f}" for v in y_values],
-            textposition="top center",
-            textfont=dict(color=colors["text_primary"], size=13),
-            fill="tozeroy",
-            fillcolor="rgba(52,211,153,0.08)",
-            hovertemplate="%{x}: %{y:.1f} AQI<extra></extra>",
-        )
-    )
-    fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=10, r=10, t=30, b=10),
-        height=320,
-        showlegend=False,
-        xaxis=dict(showgrid=False, color=colors["text_secondary"]),
-        yaxis=dict(showgrid=True, gridcolor=colors["chart_grid"], color=colors["text_secondary"], zeroline=False),
-        font=dict(color=colors["text_primary"]),
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    st.markdown("</div>", unsafe_allow_html=True)
-
-with col4:
-    model_rows = ""
-    for key, day_label, version in [
-        ("day1", "Day +1 Model", data["day1_model_version"]),
-        ("day2", "Day +2 Model", data["day2_model_version"]),
-        ("day3", "Day +3 Model", data["day3_model_version"]),
-    ]:
-        model_rows += f"""
-        <div class="model-box">
-            <span class="version-badge">v{version}</span>
-            <div class="model-name">{day_label}</div>
-            <div class="model-sub">{MODEL_TYPES[key]} • Registered</div>
+st.markdown(
+    """
+    <div class="aqi-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <div class="aqi-card-title" style="margin-bottom:0;">📈 3-Day Trajectory Forecast</div>
+            <span class="top-badge" style="color:#34d399;border-color:#34d39955;">AQI Overall</span>
         </div>
-        """
-
-    st.markdown(
-        f"""
-        <div class="aqi-card">
-            <div class="aqi-card-title" style="margin-bottom:14px;">🗄️ Model Registry</div>
-            {model_rows}
+        <div class="aqi-card-subtitle" style="margin-bottom:4px;">
+            Live reading plus model forecasts for the next 3 days
         </div>
-        """,
-        unsafe_allow_html=True,
+    """,
+    unsafe_allow_html=True,
+)
+
+x_labels = ["Now", "Day +1", "Day +2", "Day +3"]
+y_values = [current_aqi, day1, day2, day3]
+point_colors = [get_aqi_category(v)[2] for v in y_values]
+
+fig = go.Figure()
+fig.add_trace(
+    go.Scatter(
+        x=x_labels,
+        y=y_values,
+        mode="lines+markers+text",
+        line=dict(color="#34d399", width=3, shape="spline", smoothing=1.1),
+        marker=dict(size=16, color=point_colors, line=dict(width=2, color=colors["bg_card"])),
+        text=[f"{v:.0f}" for v in y_values],
+        textposition="top center",
+        textfont=dict(color=colors["text_primary"], size=13),
+        fill="tozeroy",
+        fillcolor="rgba(52,211,153,0.08)",
+        hovertemplate="%{x}: %{y:.1f} AQI<extra></extra>",
     )
+)
+fig.update_layout(
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    margin=dict(l=10, r=10, t=30, b=10),
+    height=360,
+    showlegend=False,
+    xaxis=dict(showgrid=False, color=colors["text_secondary"]),
+    yaxis=dict(showgrid=True, gridcolor=colors["chart_grid"], color=colors["text_secondary"], zeroline=False),
+    font=dict(color=colors["text_primary"]),
+)
+st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+st.markdown("</div>", unsafe_allow_html=True)
 
 # ============================================================
 # WHY THIS PREDICTION? — SHAP INSIGHTS
