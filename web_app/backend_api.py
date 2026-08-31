@@ -75,13 +75,17 @@ async def startup_event():
 @app.get("/")
 def root():
     return {"message": "Karachi AQI Predictor Backend is running successfully."}
-
 @app.get("/predict")
 def get_latest_predictions():
-    """
-    Fetch the latest automated 3-day AQI prediction directly 
-    from the Hopsworks feature group updated by your CI/CD pipeline.
-    """
+    global _prediction_cache, _prediction_cache_time
+    now = time.time()
+    
+    # 1. Return in-memory cached response if valid (Within TTL)
+    if _prediction_cache is not None and (now - _prediction_cache_time < CACHE_TTL):
+        print("Serving prediction from in-memory cache.")
+        return _prediction_cache
+
+    # 2. Otherwise, fetch fresh data from Hopsworks and update cache
     try:
         project = get_hopsworks_project()
         fs = project.get_feature_store()
@@ -96,13 +100,12 @@ def get_latest_predictions():
         if df is None or df.empty:
             return {"error": "No automated predictions found in feature store."}
             
-        # Ensure proper timestamp sorting to get the absolute latest row
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
         df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
         
         latest = df.iloc[-1]
         
-        return {
+        result = {
             "timestamp": str(latest["timestamp"]),
             "current_aqi": float(latest["current_aqi"]),
             "day1": float(latest["day1"]),
@@ -112,5 +115,11 @@ def get_latest_predictions():
             "day2_model_version": int(latest.get("day2_model_version", 1)),
             "day3_model_version": int(latest.get("day3_model_version", 1)),
         }
+        
+        # Update cache store and timestamp
+        _prediction_cache = result
+        _prediction_cache_time = now
+        
+        return result
     except Exception as exc:
         return {"error": str(exc)}
