@@ -18,7 +18,7 @@ st.set_page_config(
 # FastAPI Backend URL
 API_URL = "http://127.0.0.1:8000/predict"
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=3600)
 def fetch_predictions():
     try:
         response = requests.get(API_URL, timeout=100)
