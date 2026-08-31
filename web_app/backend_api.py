@@ -25,15 +25,28 @@ _prediction_cache_time = 0
 # ============================================================
 @app.on_event("startup")
 async def startup_event():
-    """
-    Pre-fetch live model predictions on server boot so the first user 
-    never experiences a cold-start delay.
-    """
     global _prediction_cache, _prediction_cache_time
     print("\n--- Warming up FastAPI prediction cache with live model inference ---")
     try:
         result = predict()
         if result and "error" not in result:
+            # --- Add Alert Evaluation Here Too ---
+            current = float(result.get("current_aqi", 0))
+            d1 = float(result.get("day1", 0))
+            d2 = float(result.get("day2", 0))
+            d3 = float(result.get("day3", 0))
+            
+            is_hazardous = current > 300 or d1 > 300 or d2 > 300 or d3 > 300
+            alert_message = None
+            if is_hazardous:
+                alert_message = "CRITICAL ALERT: Hazardous air quality levels detected or forecasted! Sensitive groups and general public should avoid outdoor activities."
+            
+            result["alert"] = {
+                "is_hazardous": is_hazardous,
+                "message": alert_message
+            }
+            # -------------------------------------
+            
             _prediction_cache = result
             _prediction_cache_time = time.time()
             print("--- Live cache warm-up successful ---")
@@ -41,15 +54,13 @@ async def startup_event():
         # Warm up SHAP
         res_shap = explain_predictions()
         if res_shap and "error" not in res_shap:
+            global _shap_cache, _shap_cache_time
             _shap_cache = res_shap
             _shap_cache_time = time.time()
             print("--- Startup cache warm-up successful (Predictions + SHAP) ---")
 
-        else:
-            print(f"Cache warm-up returned error: {result.get('error', 'Unknown error')}")
     except Exception as exc:
         print(f"Cache warm-up failed: {exc}")
-
 @app.get("/")
 def root():
     return {"message": "Karachi AQI Predictor Backend is running successfully with real-time inference."}

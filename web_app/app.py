@@ -411,6 +411,46 @@ def inject_css(theme: str):
         }}
         .shap-feature-value.positive {{ color: #34d399; }}
         .shap-feature-value.negative {{ color: #ef8a99; }}
+        /* ---- Model Registry: ML Pipeline Workflow ---- */
+        .pipeline-row {{
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            flex-wrap: wrap;
+        }}
+        .pipeline-step {{
+            background-color: {bg_main if theme == "dark" else "#f8fafc"};
+            border: 1px solid {border};
+            border-radius: 12px;
+            padding: 22px 26px;
+            text-align: center;
+            min-width: 140px;
+        }}
+        .pipeline-step.active {{
+            background-color: rgba(52,211,153,0.12);
+            border: 1px solid #34d399;
+        }}
+        .pipeline-icon {{
+            font-size: 22px;
+            margin-bottom: 12px;
+            color: {text_secondary};
+        }}
+        .pipeline-step.active .pipeline-icon {{
+            color: #34d399;
+        }}
+        .pipeline-label {{
+            font-size: 13.5px;
+            font-weight: 600;
+            color: {text_primary};
+        }}
+        .pipeline-step.active .pipeline-label {{
+            color: {text_primary};
+            font-weight: 700;
+        }}
+        .pipeline-arrow {{
+            font-size: 18px;
+            color: {text_secondary};
+        }}
         .live-dot {{
             height: 8px;
             width: 8px;
@@ -582,7 +622,12 @@ with st.sidebar:
             st.session_state.page = "eda"
             st.rerun()
 
-    st.markdown("<div class='nav-item'>🧩&nbsp;&nbsp;ML Pipelines</div>", unsafe_allow_html=True)
+    if st.session_state.page == "pipelines":
+        st.markdown("<div class='nav-item-active'>🧩&nbsp;&nbsp;ML Pipelines</div>", unsafe_allow_html=True)
+    else:
+        if st.button("🧩  ML Pipelines", key="nav_pipelines", use_container_width=True):
+            st.session_state.page = "pipelines"
+            st.rerun()
 
     if st.session_state.page == "registry":
         st.markdown("<div class='nav-item-active'>🗄️&nbsp;&nbsp;Model Registry</div>", unsafe_allow_html=True)
@@ -592,13 +637,6 @@ with st.sidebar:
             st.rerun()
 
     if st.session_state.page == "global":
-        with st.expander("⚙️ API Settings"):
-            new_url = st.text_input("FastAPI base URL", value=st.session_state.api_url)
-            if new_url != st.session_state.api_url:
-                st.session_state.api_url = new_url
-                fetch_predictions.clear()
-
-        st.markdown("<br>", unsafe_allow_html=True)
         if st.button("Refresh Forecast", use_container_width=True, type="primary"):
             st.session_state.fetch_nonce += 1
             fetch_predictions.clear()
@@ -715,6 +753,64 @@ if st.session_state.page == "registry":
                     """,
                     unsafe_allow_html=True,
                 )
+
+    st.markdown(
+        f"""
+        <div class="footer-text" style="display:flex;justify-content:space-between;">
+            <span>© {datetime.now().year} Pearls AQI Predictor • Advanced Air Quality Monitoring & 3-Day Forecasting</span>
+            <span>Privacy Policy &nbsp;•&nbsp; Terms of Service &nbsp;•&nbsp; System Status</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.stop()
+
+if st.session_state.page == "pipelines":
+    # ============================================================
+    # ML PIPELINES PAGE
+    # ============================================================
+    top_l, top_r = st.columns([3, 1])
+    with top_l:
+        st.markdown(
+            "<div class='eda-breadcrumb'>DASHBOARD &nbsp;›&nbsp; "
+            "<span class='active'>ML PIPELINES</span></div>"
+            "<div class='eda-title'>ML Pipelines</div>"
+            "<div class='eda-subtitle'>End-to-end flow of data through the forecasting system, "
+            "from raw ingestion to the final forecast output.</div>",
+            unsafe_allow_html=True,
+        )
+    with top_r:
+        st.markdown("<div style='padding-top:10px;'></div>", unsafe_allow_html=True)
+        if st.button("← Back to Global View", key="back_to_global_pipelines", use_container_width=True):
+            st.session_state.page = "global"
+            st.rerun()
+
+    pipeline_steps = [
+        ("🗄️", "Raw Data", False),
+        ("⚙️", "Processing", False),
+        ("📋", "Feature Store", False),
+        ("🧠", "Prediction", False),
+        ("📊", "Forecast", True),
+    ]
+    pipeline_html = ""
+    for i, (icon, step_label, is_active) in enumerate(pipeline_steps):
+        step_class = "pipeline-step active" if is_active else "pipeline-step"
+        pipeline_html += (
+            f'<div class="{step_class}">'
+            f'<div class="pipeline-icon">{icon}</div>'
+            f'<div class="pipeline-label">{step_label}</div>'
+            f'</div>'
+        )
+        if i < len(pipeline_steps) - 1:
+            pipeline_html += '<div class="pipeline-arrow">→</div>'
+
+    pipeline_card_html = (
+        '<div class="aqi-card">'
+        '<div class="aqi-card-title" style="margin-bottom:16px;">🧩 ML Pipeline Workflow</div>'
+        f'<div class="pipeline-row">{pipeline_html}</div>'
+        '</div>'
+    )
+    st.markdown(pipeline_card_html, unsafe_allow_html=True)
 
     st.markdown(
         f"""
@@ -910,10 +1006,14 @@ fig.add_trace(
 fig.update_layout(
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
-    margin=dict(l=10, r=10, t=30, b=10),
+    margin=dict(l=40, r=40, t=40, b=20),
     height=360,
     showlegend=False,
-    xaxis=dict(showgrid=False, color=colors["text_secondary"]),
+    xaxis=dict(
+        showgrid=False,
+        color=colors["text_secondary"],
+        range=[-0.6, len(x_labels) - 0.4],
+    ),
     yaxis=dict(showgrid=True, gridcolor=colors["chart_grid"], color=colors["text_secondary"], zeroline=False),
     font=dict(color=colors["text_primary"]),
 )
