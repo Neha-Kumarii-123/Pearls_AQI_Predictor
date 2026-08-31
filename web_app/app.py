@@ -9,6 +9,7 @@ Configure the backend URL either by editing DEFAULT_API_URL below,
 setting the AQI_API_URL environment variable, or using the "API
 Settings" expander in the sidebar at runtime.
 """
+
 import os
 import base64
 from datetime import datetime, timezone
@@ -134,6 +135,25 @@ def format_sync_time(ts_str: str) -> str:
         return f"{delta_min // 60}h ago"
     except Exception:
         return "Unknown"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_shap_explanations(api_url: str, _nonce: int):
+    """
+    Calls the FastAPI /explain endpoint. Expected shape:
+    {
+      "day1": {"prediction": .., "base_value": .., "features": [
+          {"feature": .., "shap_value": .., "impact": ..}, ...
+      ]},
+      "day2": {...}, "day3": {...}
+    }
+    """
+    resp = requests.get(f"{api_url}/explain", timeout=20)
+    resp.raise_for_status()
+    data = resp.json()
+    if isinstance(data, dict) and "error" in data:
+        raise RuntimeError(data["error"])
+    return data
 
 
 # ============================================================
@@ -312,6 +332,85 @@ def inject_css(theme: str):
             color: {text_primary};
             margin-left: 8px;
         }}
+        /* ---- Why This Prediction? (SHAP Insights) ---- */
+        .shap-card {{
+            display: flex;
+            gap: 32px;
+            flex-wrap: wrap;
+        }}
+        .shap-left {{
+            flex: 0 0 200px;
+        }}
+        .shap-forecast-label {{
+            font-size: 13px;
+            color: {text_secondary};
+            margin-bottom: 6px;
+        }}
+        .shap-pred-value {{
+            font-size: 40px;
+            font-weight: 800;
+            color: {text_primary};
+            line-height: 1;
+        }}
+        .shap-delta {{
+            display: block;
+            font-size: 13px;
+            font-weight: 700;
+            margin-top: 8px;
+        }}
+        .shap-delta.positive {{ color: #f87171; }}
+        .shap-delta.negative {{ color: #34d399; }}
+        .shap-base-label {{
+            font-size: 13px;
+            color: {text_secondary};
+            margin-top: 14px;
+        }}
+        .shap-right {{
+            flex: 1;
+            min-width: 260px;
+            border-left: 1px solid {border};
+            padding-left: 28px;
+        }}
+        .shap-features-title {{
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            color: {text_secondary};
+            margin-bottom: 16px;
+        }}
+        .shap-feature-row {{
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 14px;
+        }}
+        .shap-feature-name {{
+            flex: 0 0 90px;
+            font-size: 13px;
+            color: {text_primary};
+        }}
+        .shap-track {{
+            flex: 1;
+            height: 8px;
+            background-color: {border};
+            border-radius: 999px;
+            overflow: hidden;
+        }}
+        .shap-fill {{
+            height: 100%;
+            border-radius: 999px;
+        }}
+        .shap-fill.positive {{ background-color: #34d399; }}
+        .shap-fill.negative {{ background-color: #ef8a99; }}
+        .shap-feature-value {{
+            flex: 0 0 46px;
+            text-align: right;
+            font-size: 13px;
+            font-weight: 700;
+        }}
+        .shap-feature-value.positive {{ color: #34d399; }}
+        .shap-feature-value.negative {{ color: #ef8a99; }}
         .live-dot {{
             height: 8px;
             width: 8px;
@@ -497,6 +596,7 @@ with st.sidebar:
         if st.button("Refresh Forecast", use_container_width=True, type="primary"):
             st.session_state.fetch_nonce += 1
             fetch_predictions.clear()
+            fetch_shap_explanations.clear()
             st.rerun()
 
 if st.session_state.page == "eda":
@@ -768,6 +868,78 @@ with col4:
         """,
         unsafe_allow_html=True,
     )
+
+# ============================================================
+# WHY THIS PREDICTION? — SHAP INSIGHTS
+# ============================================================
+st.markdown(
+    """
+    <div style="display:flex;align-items:center;gap:14px;margin:8px 0 16px 0;">
+        <div style="font-size:26px;font-weight:800;">Why This Prediction?</div>
+        <span class="top-badge" style="color:#34d399;border-color:#34d39955;">SHAP Insights</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+shap_error = None
+try:
+    shap_data = fetch_shap_explanations(st.session_state.api_url, st.session_state.fetch_nonce)
+except requests.exceptions.ConnectionError:
+    shap_error = f"Couldn't reach the API at **{st.session_state.api_url}/explain**."
+except requests.exceptions.Timeout:
+    shap_error = "The /explain request timed out — the SHAP cache may still be warming up."
+except Exception as exc:
+    shap_error = f"SHAP explanations unavailable: {exc}"
+
+if shap_error:
+    st.warning(shap_error)
+else:
+    for key, label in [("day1", "Forecast: Tomorrow"), ("day2", "Forecast: Day +2"), ("day3", "Forecast: Day +3")]:
+        horizon = shap_data.get(key) if isinstance(shap_data, dict) else None
+        if not horizon:
+            continue
+
+        prediction = float(horizon["prediction"])
+        base_value = float(horizon["base_value"])
+        delta = prediction - base_value
+        delta_sign = "↑" if delta >= 0 else "↓"
+        delta_class = "positive" if delta >= 0 else "negative"
+
+        features = horizon.get("features", [])
+        max_abs = max((abs(float(f["shap_value"])) for f in features), default=0) or 1
+
+        rows_html = ""
+        for f in features:
+            sval = float(f["shap_value"])
+            cls = "positive" if sval >= 0 else "negative"
+            pct = max(4, min(100, round(abs(sval) / max_abs * 100)))
+            sign = "+" if sval >= 0 else ""
+            rows_html += f"""
+            <div class="shap-feature-row">
+                <div class="shap-feature-name">{f["feature"]}</div>
+                <div class="shap-track"><div class="shap-fill {cls}" style="width:{pct}%;"></div></div>
+                <div class="shap-feature-value {cls}">{sign}{sval:.1f}</div>
+            </div>
+            """
+
+        st.markdown(
+            f"""
+            <div class="aqi-card shap-card">
+                <div class="shap-left">
+                    <div class="shap-forecast-label">{label}</div>
+                    <div class="shap-pred-value">{prediction:.0f}</div>
+                    <span class="shap-delta {delta_class}">{delta_sign}{abs(delta):.0f} from Base</span>
+                    <div class="shap-base-label">Base Value: {base_value:.0f}</div>
+                </div>
+                <div class="shap-right">
+                    <div class="shap-features-title">Top Influential Features</div>
+                    {rows_html}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 # ============================================================
 # FOOTER
