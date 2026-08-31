@@ -115,7 +115,7 @@ def fetch_predictions(api_url: str, _nonce: int):
     caches for 1 hour, so this mostly avoids re-hitting it needlessly
     on unrelated Streamlit reruns like a theme toggle).
     """
-    resp = requests.get(f"{api_url}/predict", timeout=20)
+    resp = requests.get(f"{api_url}/predict", timeout=200)
     resp.raise_for_status()
     data = resp.json()
     if isinstance(data, dict) and "error" in data:
@@ -902,9 +902,20 @@ else:
 
         prediction = float(horizon["prediction"])
         base_value = float(horizon["base_value"])
+        
+        # Exact mathematical difference (Prediction minus Base Value)
         delta = prediction - base_value
-        delta_sign = "↑" if delta >= 0 else "↓"
-        delta_class = "positive" if delta >= 0 else "negative"
+        
+        # Sign aur Class ko strictly delta ke real sign (+ ya -) par depend karein
+        if delta > 0:
+            delta_sign = "↑"
+            delta_class = "positive"
+        elif delta < 0:
+            delta_sign = "↓"
+            delta_class = "negative"
+        else:
+            delta_sign = ""
+            delta_class = "neutral"
 
         features = horizon.get("features", [])
         max_abs = max((abs(float(f["shap_value"])) for f in features), default=0) or 1
