@@ -11,11 +11,33 @@ Settings" expander in the sidebar at runtime.
 """
 
 import os
+import base64
 from datetime import datetime, timezone
+from pathlib import Path
 
 import requests
 import streamlit as st
 import plotly.graph_objects as go
+
+APP_DIR = Path(__file__).resolve().parent
+
+# EDA plot files: (relative path from this file, card title, generic caption).
+# Captions describe what each chart shows in general terms only — no invented
+# statistics, since we don't have the underlying summary numbers.
+EDA_PLOTS = [
+    ("assets/eda/aqi_historical_trend.png", "Historical AQI Trend",
+     "Trailing daily AQI readings across the historical training window."),
+    ("assets/eda/aqi_by_hour.png", "AQI by Hour of Day",
+     "Average AQI grouped by hour, showing diurnal variation."),
+    ("assets/eda/aqi_by_day_of_week.png", "AQI by Day of Week",
+     "Average AQI compared across weekdays vs. weekends."),
+    ("assets/eda/aqi_distribution.png", "AQI Distribution",
+     "Distribution of AQI values across the historical dataset."),
+    ("assets/eda/aqi_vs_pollutants.png", "AQI vs. Pollutant Features",
+     "Relationship between AQI and individual pollutant concentrations."),
+    ("assets/eda/high_aqi_analysis.png", "High-AQI Event Analysis",
+     "Conditions and features associated with high-AQI episodes."),
+]
 
 # ============================================================
 # CONFIG
@@ -52,6 +74,8 @@ if "prev_current_aqi" not in st.session_state:
     st.session_state.prev_current_aqi = None
 if "fetch_nonce" not in st.session_state:
     st.session_state.fetch_nonce = 0
+if "page" not in st.session_state:
+    st.session_state.page = "global"
 
 # ============================================================
 # AQI CATEGORY HELPERS
@@ -125,6 +149,9 @@ def inject_css(theme: str):
         text_primary = "#f8fafc"
         text_secondary = "#94a3b8"
         chart_grid = "#1e293b"
+        glass_bg = "rgba(23, 31, 51, 0.55)"
+        glass_border = "rgba(78, 222, 163, 0.25)"
+        glass_shadow = "rgba(0,0,0,0.28)"
     else:
         bg_main = "#f1f5f9"
         bg_sidebar = "#ffffff"
@@ -133,6 +160,9 @@ def inject_css(theme: str):
         text_primary = "#0f172a"
         text_secondary = "#64748b"
         chart_grid = "#e2e8f0"
+        glass_bg = "rgba(255, 255, 255, 0.85)"
+        glass_border = "rgba(16, 185, 129, 0.35)"
+        glass_shadow = "rgba(15, 23, 42, 0.10)"
 
     st.markdown(
         f"""
@@ -140,6 +170,20 @@ def inject_css(theme: str):
         .stApp {{
             background-color: {bg_main};
             color: {text_primary};
+            margin-top: -2.5rem;
+        }}
+        header[data-testid="stHeader"] {{
+            display: none;
+        }}
+        #MainMenu {{
+            visibility: hidden;
+        }}
+        [data-testid="collapsedControl"] {{
+            top: 0.6rem !important;
+            left: 2rem !important;
+        }}
+        [data-testid="stSidebarCollapseButton"] {{
+            margin-top: 0.6rem !important;
         }}
         section[data-testid="stSidebar"] {{
             background-color: {bg_sidebar};
@@ -149,7 +193,7 @@ def inject_css(theme: str):
             color: {text_primary};
         }}
         .block-container {{
-            padding-top: 1.5rem;
+            padding-top: 3rem;
             padding-bottom: 2rem;
         }}
 
@@ -309,6 +353,101 @@ def inject_css(theme: str):
             background-color: #0ea371;
             color: white;
         }}
+
+        /* Sidebar nav buttons (Global Monitoring / EDA Insights when not active)
+           render as plain left-aligned rows instead of green pills, matching
+           the static nav-item look. The Refresh Forecast button stays green
+           via kind="primary". */
+        section[data-testid="stSidebar"] div.stButton > button[kind="secondary"] {{
+            background-color: transparent;
+            color: {text_secondary};
+            border: none;
+            text-align: left;
+            justify-content: flex-start;
+            font-weight: 600;
+            padding: 10px 14px;
+            border-radius: 10px;
+            width: 100%;
+        }}
+        section[data-testid="stSidebar"] div.stButton > button[kind="secondary"]:hover {{
+            background-color: rgba(255,255,255,0.06);
+            color: {text_primary};
+        }}
+        section[data-testid="stSidebar"] div.stButton > button[kind="primary"] {{
+            background-color: #10b981;
+            color: white;
+            width: 100%;
+        }}
+
+        /* ---- EDA Insights page: Obsidian Emerald glass-morphism (theme-aware) ---- */
+        .eda-breadcrumb {{
+            font-size: 12.5px;
+            font-weight: 700;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+            color: {text_secondary};
+        }}
+        .eda-breadcrumb .active {{
+            color: #10b981;
+        }}
+        .eda-title {{
+            font-size: 32px;
+            font-weight: 800;
+            color: {text_primary};
+            margin: 10px 0 8px 0;
+        }}
+        .eda-subtitle {{
+            font-size: 14.5px;
+            color: {text_secondary};
+            line-height: 1.55;
+            max-width: 820px;
+            margin-bottom: 22px;
+        }}
+        .glass-card {{
+            background: {glass_bg};
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid {glass_border};
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 22px;
+            box-shadow: 0 8px 32px {glass_shadow};
+        }}
+        .glass-card-title {{
+            font-size: 15px;
+            font-weight: 700;
+            color: {text_primary};
+            margin-bottom: 4px;
+        }}
+        .glass-card-caption {{
+            font-size: 12.5px;
+            color: {text_secondary};
+            line-height: 1.4;
+            margin-bottom: 10px;
+        }}
+        .glass-missing {{
+            padding: 48px 16px;
+            text-align: center;
+            color: {text_secondary};
+            font-size: 12.5px;
+            border: 1px dashed {border};
+            border-radius: 10px;
+        }}
+        .glass-card img {{
+            width: 100%;
+            border-radius: 10px;
+            display: block;
+            border: 1px solid {border};
+        }}
+
+        @keyframes pulse {{
+            0% {{ opacity: 0.4; }}
+            50% {{ opacity: 0.9; }}
+            100% {{ opacity: 0.4; }}
+        }}
+        .skeleton-card {{
+            animation: pulse 1.5s ease-in-out infinite;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -331,24 +470,87 @@ with st.sidebar:
         "<div style='font-size:13px;color:#94a3b8;margin-bottom:24px;'>Environmental AI</div>",
         unsafe_allow_html=True,
     )
-    st.markdown("<div class='nav-item-active'>🌐&nbsp;&nbsp;Global View</div>", unsafe_allow_html=True)
+    if st.session_state.page == "global":
+        st.markdown("<div class='nav-item-active'>🌐&nbsp;&nbsp;Global Monitoring</div>", unsafe_allow_html=True)
+    else:
+        if st.button("🌐  Global Monitoring", key="nav_global", use_container_width=True):
+            st.session_state.page = "global"
+            st.rerun()
+
+    if st.session_state.page == "eda":
+        st.markdown("<div class='nav-item-active'>📊&nbsp;&nbsp;EDA Insights</div>", unsafe_allow_html=True)
+    else:
+        if st.button("📊  EDA Insights", key="nav_eda", use_container_width=True):
+            st.session_state.page = "eda"
+            st.rerun()
+
     st.markdown("<div class='nav-item'>🧩&nbsp;&nbsp;ML Pipelines</div>", unsafe_allow_html=True)
     st.markdown("<div class='nav-item'>🗄️&nbsp;&nbsp;Model Registry</div>", unsafe_allow_html=True)
 
-    with st.expander("⚙️ API Settings"):
-        new_url = st.text_input("FastAPI base URL", value=st.session_state.api_url)
-        if new_url != st.session_state.api_url:
-            st.session_state.api_url = new_url
-            fetch_predictions.clear()
+    if st.session_state.page == "global":
+        with st.expander("⚙️ API Settings"):
+            new_url = st.text_input("FastAPI base URL", value=st.session_state.api_url)
+            if new_url != st.session_state.api_url:
+                st.session_state.api_url = new_url
+                fetch_predictions.clear()
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("Refresh Forecast", use_container_width=True):
-        st.session_state.fetch_nonce += 1
-        fetch_predictions.clear()
-        st.rerun()
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Refresh Forecast", use_container_width=True, type="primary"):
+            st.session_state.fetch_nonce += 1
+            fetch_predictions.clear()
+            st.rerun()
+
+if st.session_state.page == "eda":
+    # ============================================================
+    # EDA INSIGHTS PAGE
+    # ============================================================
+    top_l, top_r = st.columns([3, 1])
+    with top_l:
+        st.markdown(
+            "<div class='eda-breadcrumb'>DASHBOARD &nbsp;›&nbsp; "
+            "<span class='active'>EDA INSIGHTS</span></div>"
+            "<div class='eda-title'>Exploratory Data Analysis &amp; Feature Trends</div>"
+            "<div class='eda-subtitle'>Temporal distributions, pollutant correlations, and "
+            "historical patterns underlying the Karachi AQI forecasting model.</div>",
+            unsafe_allow_html=True,
+        )
+    with top_r:
+        st.markdown("<div style='padding-top:10px;'></div>", unsafe_allow_html=True)
+        if st.button("← Back to Global View", key="back_to_global", use_container_width=True):
+            st.session_state.page = "global"
+            st.rerun()
+
+    eda_cols = st.columns(2)
+    for i, (rel_path, title, caption) in enumerate(EDA_PLOTS):
+        img_path = APP_DIR / rel_path
+        if img_path.exists():
+            b64 = base64.b64encode(img_path.read_bytes()).decode()
+            img_html = f'<img src="data:image/png;base64,{b64}" alt="{title}" />'
+        else:
+            img_html = f"<div class='glass-missing'>Image not found:<br>{rel_path}</div>"
+        with eda_cols[i % 2]:
+            st.markdown(
+                f"<div class='glass-card'>"
+                f"<div class='glass-card-title'>{title}</div>"
+                f"<div class='glass-card-caption'>{caption}</div>"
+                f"{img_html}"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    st.markdown(
+        f"""
+        <div class="footer-text" style="display:flex;justify-content:space-between;">
+            <span>© {datetime.now().year} Pearls AQI Predictor • Advanced Air Quality Monitoring & 3-Day Forecasting</span>
+            <span>Privacy Policy &nbsp;•&nbsp; Terms of Service &nbsp;•&nbsp; System Status</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.stop()
 
 # ============================================================
-# TOP BAR
+# TOP BAR (Global Monitoring)
 # ============================================================
 top_left, top_right = st.columns([3, 2])
 with top_left:
@@ -379,9 +581,21 @@ st.markdown("<div style='margin-bottom:10px;'></div>", unsafe_allow_html=True)
 # ============================================================
 data = None
 error_msg = None
+
+loading_placeholder = st.empty()
+with loading_placeholder.container():
+    st.markdown(
+        """
+        <div class="aqi-card skeleton-card">
+            <div class="aqi-card-title">📡 Generating Forecast</div>
+            <div class="aqi-card-subtitle">Running inference on live model pipeline — Karachi Urban Core</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 try:
-    with st.spinner("Fetching live prediction from backend..."):
-        data = fetch_predictions(st.session_state.api_url, st.session_state.fetch_nonce)
+    data = fetch_predictions(st.session_state.api_url, st.session_state.fetch_nonce)
 except requests.exceptions.ConnectionError:
     error_msg = (
         f"Couldn't reach the API at **{st.session_state.api_url}**. "
@@ -392,6 +606,8 @@ except requests.exceptions.Timeout:
     error_msg = "The API request timed out. The model may still be warming up — try Refresh Forecast in a moment."
 except Exception as exc:
     error_msg = f"API returned an error: {exc}"
+finally:
+    loading_placeholder.empty()
 
 if error_msg:
     st.error(error_msg)
@@ -423,7 +639,7 @@ with col1:
     st.markdown(
         f"""
         <div class="aqi-card">
-            <div class="aqi-card-title">📡 Current Baseline</div>
+            <div class="aqi-card-title">📡 Current AQI</div>
             <div class="aqi-card-subtitle">Karachi Urban Core</div>
             <div class="aqi-big-number">{current_aqi:.0f}</div>
             <span class="aqi-badge" style="background-color:{color}22;color:{color};border:1px solid {color}55;">{full_risk}</span>
@@ -453,9 +669,9 @@ with col2:
     )
     f1, f2, f3 = st.columns(3)
     forecast_days = [
-        ("TOMORROW", day1),
-        ("DAY +2", day2),
-        ("DAY +3", day3),
+        ("24H Horizon", day1),
+        ("48H Horizon", day2),
+        ("72H Horizon", day3),
     ]
     for col, (label, val) in zip((f1, f2, f3), forecast_days):
         short_label, _, fcolor = get_aqi_category(val)
