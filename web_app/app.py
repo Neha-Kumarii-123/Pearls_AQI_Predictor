@@ -1,5 +1,5 @@
 """
-Pearls AQI Predictor — Streamlit Dashboard
+KarachiPulse AQI — Streamlit Dashboard
 Connects live to the FastAPI backend's /predict endpoint.
 
 Run with:
@@ -55,8 +55,8 @@ MODEL_TYPES = {
 }
 
 st.set_page_config(
-    page_title="Pearls AQI Predictor",
-    page_icon="🌫️",
+    page_title="KarachiPulse AQI",
+    page_icon="🍃",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -684,7 +684,7 @@ if st.session_state.page == "eda":
     st.markdown(
         f"""
         <div class="footer-text" style="display:flex;justify-content:space-between;">
-            <span>© {datetime.now().year} Pearls AQI Predictor • Advanced Air Quality Monitoring & 3-Day Forecasting</span>
+            <span>© {datetime.now().year} KarachiPulse AQI • Advanced Air Quality Monitoring & 3-Day Forecasting</span>
             <span>Privacy Policy &nbsp;•&nbsp; Terms of Service &nbsp;•&nbsp; System Status</span>
         </div>
         """,
@@ -757,7 +757,7 @@ if st.session_state.page == "registry":
     st.markdown(
         f"""
         <div class="footer-text" style="display:flex;justify-content:space-between;">
-            <span>© {datetime.now().year} Pearls AQI Predictor • Advanced Air Quality Monitoring & 3-Day Forecasting</span>
+            <span>© {datetime.now().year} KarachiPulse AQI • Advanced Air Quality Monitoring & 3-Day Forecasting</span>
             <span>Privacy Policy &nbsp;•&nbsp; Terms of Service &nbsp;•&nbsp; System Status</span>
         </div>
         """,
@@ -815,7 +815,7 @@ if st.session_state.page == "pipelines":
     st.markdown(
         f"""
         <div class="footer-text" style="display:flex;justify-content:space-between;">
-            <span>© {datetime.now().year} Pearls AQI Predictor • Advanced Air Quality Monitoring & 3-Day Forecasting</span>
+            <span>© {datetime.now().year} KarachiPulse AQI • Advanced Air Quality Monitoring & 3-Day Forecasting</span>
             <span>Privacy Policy &nbsp;•&nbsp; Terms of Service &nbsp;•&nbsp; System Status</span>
         </div>
         """,
@@ -829,7 +829,7 @@ if st.session_state.page == "pipelines":
 top_left, top_right = st.columns([3, 2])
 with top_left:
     st.markdown(
-        "<div style='font-size:26px;font-weight:800;'>Pearls AQI Predictor</div>"
+        "<div style='font-size:26px;font-weight:800;'>KarachiPulse AQI</div>"
         "<div style='font-size:13.5px;color:#94a3b8;'>Advanced Air Quality Monitoring & 3-Day Forecasting</div>",
         unsafe_allow_html=True,
     )
@@ -1115,7 +1115,7 @@ else:
 st.markdown(
     f"""
     <div class="footer-text" style="display:flex;justify-content:space-between;">
-        <span>© {datetime.now().year} Pearls AQI Predictor • Advanced Air Quality Monitoring & 3-Day Forecasting</span>
+        <span>© {datetime.now().year} KarachiPulse AQI • Advanced Air Quality Monitoring & 3-Day Forecasting</span>
         <span>Privacy Policy &nbsp;•&nbsp; Terms of Service &nbsp;•&nbsp; System Status</span>
     </div>
     """,
