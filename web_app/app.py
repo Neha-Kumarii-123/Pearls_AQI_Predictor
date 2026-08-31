@@ -1,102 +1,568 @@
-import streamlit as st
-import requests
-from datetime import datetime
+"""
+Pearls AQI Predictor — Streamlit Dashboard
+Connects live to the FastAPI backend's /predict endpoint.
 
-# 1. Page Config
+Run with:
+    streamlit run streamlit_app.py
+
+Configure the backend URL either by editing DEFAULT_API_URL below,
+setting the AQI_API_URL environment variable, or using the "API
+Settings" expander in the sidebar at runtime.
+"""
+
+import os
+from datetime import datetime, timezone
+
+import requests
+import streamlit as st
+import plotly.graph_objects as go
+
+# ============================================================
+# CONFIG
+# ============================================================
+DEFAULT_API_URL = os.environ.get("AQI_API_URL", "http://localhost:8000")
+
+# Static, stable metadata about which algorithm powers each horizon.
+# (This does not change request-to-request, so it isn't part of the
+# API response — only the *version numbers* are, and those are read
+# live from /predict below.)
+MODEL_TYPES = {
+    "day1": "XGBoost",
+    "day2": "Ridge Regression",
+    "day3": "Ridge Regression",
+}
+
 st.set_page_config(
-    page_title="Karachi AQI Predictor",
-    page_icon="🌍",
-    layout="wide"
+    page_title="Pearls AQI Predictor",
+    page_icon="🌫️",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# Custom CSS for exact SaaS header card look matching your reference screenshot
-st.markdown("""
-<style>
-    .stApp {
-        background-color: #f8fafc;
-    }
-    .top-header-card {
-        background-color: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 16px;
-        padding: 1rem 1.5rem;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.02);
-        margin-bottom: 2rem;
-    }
-    .header-left {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-    }
-    .logo-icon {
-        background-color: #dcfce7;
-        color: #166534;
-        padding: 10px;
-        border-radius: 12px;
-        font-size: 1.2rem;
-    }
-    .header-right {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
-    .badge-pill {
-        background-color: #f1f5f9;
-        border: 1px solid #e2e8f0;
-        padding: 6px 12px;
-        border-radius: 20px;
-        font-size: 0.85rem;
-        color: #475569;
-        font-weight: 500;
-    }
-</style>
-""", unsafe_allow_html=True)
+# ============================================================
+# SESSION STATE
+# ============================================================
+if "theme" not in st.session_state:
+    st.session_state.theme = "dark"
+if "api_url" not in st.session_state:
+    st.session_state.api_url = DEFAULT_API_URL
+if "last_timestamp" not in st.session_state:
+    st.session_state.last_timestamp = None
+if "prev_current_aqi" not in st.session_state:
+    st.session_state.prev_current_aqi = None
+if "fetch_nonce" not in st.session_state:
+    st.session_state.fetch_nonce = 0
 
-# FastAPI Backend URL
-API_URL = "http://127.0.0.1:8000/predict"
+# ============================================================
+# AQI CATEGORY HELPERS
+# ============================================================
+def get_aqi_category(aqi: float):
+    """Returns (short_label, full_risk_label, color) for an AQI value."""
+    if aqi is None:
+        return "Unknown", "No Data", "#64748b"
+    if aqi <= 50:
+        return "Good", "GOOD AIR QUALITY", "#34d399"
+    if aqi <= 100:
+        return "Moderate", "MODERATE HEALTH RISK", "#f5b731"
+    if aqi <= 150:
+        return "Unhealthy (SG)", "UNHEALTHY FOR SENSITIVE GROUPS", "#fb923c"
+    if aqi <= 200:
+        return "Unhealthy", "UNHEALTHY", "#f87171"
+    if aqi <= 300:
+        return "Very Unhealthy", "VERY UNHEALTHY", "#c084fc"
+    return "Hazardous", "HAZARDOUS", "#b91c1c"
 
-@st.cache_data(ttl=600)
-def fetch_predictions():
+
+def progress_pct(aqi: float) -> int:
+    """Fill percentage for the small forecast progress bars, capped at 100."""
+    if aqi is None:
+        return 0
+    return max(4, min(100, round((aqi / 200) * 100)))
+
+
+# ============================================================
+# API CALL
+# ============================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_predictions(api_url: str, _nonce: int):
+    """
+    Calls the FastAPI /predict endpoint. `_nonce` is bumped by the
+    Refresh button to force a fresh call (the backend itself also
+    caches for 1 hour, so this mostly avoids re-hitting it needlessly
+    on unrelated Streamlit reruns like a theme toggle).
+    """
+    resp = requests.get(f"{api_url}/predict", timeout=20)
+    resp.raise_for_status()
+    data = resp.json()
+    if isinstance(data, dict) and "error" in data:
+        raise RuntimeError(data["error"])
+    return data
+
+
+def format_sync_time(ts_str: str) -> str:
     try:
-        response = requests.get(API_URL, timeout=150)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"error": f"Server status {response.status_code}"}
-    except Exception as e:
-        return {"error": str(e)}
+        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        delta_min = int((now - ts).total_seconds() // 60)
+        if delta_min < 1:
+            return "Just now"
+        if delta_min < 60:
+            return f"{delta_min}m ago"
+        return f"{delta_min // 60}h ago"
+    except Exception:
+        return "Unknown"
 
-# Fetch Data for Header Timestamp
-data = fetch_predictions()
-timestamp_str = "Updating..."
-if "timestamp" in data:
-    try:
-        dt = datetime.fromisoformat(data["timestamp"].replace("Z", "+00:00"))
-        timestamp_str = dt.strftime("%b %d, %Y at %I:%M %p")
-    except:
-        timestamp_str = str(data["timestamp"])[:16]
 
-# Render the Exact Header Card from Reference
-st.markdown(f"""
-    <div class="top-header-card">
-        <div class="header-left">
-            <div class="logo-icon">🌿</div>
-            <div>
-                <h3 style="margin: 0; font-size: 1.1rem; color: #0f172a; font-weight: 700;">Pearls AQI Predictor</h3>
-                <p style="margin: 0; font-size: 0.8rem; color: #64748b;">Advanced air quality monitoring</p>
+# ============================================================
+# THEME / CSS
+# ============================================================
+def inject_css(theme: str):
+    if theme == "dark":
+        bg_main = "#0b1120"
+        bg_sidebar = "#0a0f1e"
+        bg_card = "#111a2e"
+        border = "#1e293b"
+        text_primary = "#f8fafc"
+        text_secondary = "#94a3b8"
+        chart_grid = "#1e293b"
+    else:
+        bg_main = "#f1f5f9"
+        bg_sidebar = "#ffffff"
+        bg_card = "#ffffff"
+        border = "#e2e8f0"
+        text_primary = "#0f172a"
+        text_secondary = "#64748b"
+        chart_grid = "#e2e8f0"
+
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background-color: {bg_main};
+            color: {text_primary};
+        }}
+        section[data-testid="stSidebar"] {{
+            background-color: {bg_sidebar};
+            border-right: 1px solid {border};
+        }}
+        section[data-testid="stSidebar"] * {{
+            color: {text_primary};
+        }}
+        .block-container {{
+            padding-top: 1.5rem;
+            padding-bottom: 2rem;
+        }}
+
+        .aqi-card {{
+            background-color: {bg_card};
+            border: 1px solid {border};
+            border-radius: 14px;
+            padding: 20px 22px;
+            margin-bottom: 18px;
+        }}
+        .aqi-card-title {{
+            font-size: 17px;
+            font-weight: 700;
+            color: {text_primary};
+            margin-bottom: 2px;
+        }}
+        .aqi-card-subtitle {{
+            font-size: 13px;
+            color: {text_secondary};
+            margin-bottom: 14px;
+        }}
+        .aqi-big-number {{
+            font-size: 52px;
+            font-weight: 800;
+            color: {text_primary};
+            line-height: 1;
+            margin: 6px 0 14px 0;
+        }}
+        .aqi-badge {{
+            display: inline-block;
+            padding: 6px 14px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+        }}
+        .aqi-divider {{
+            border-top: 1px solid {border};
+            margin: 16px 0 10px 0;
+        }}
+        .aqi-footer-row {{
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            color: {text_secondary};
+        }}
+        .mini-card {{
+            background-color: {bg_main if theme == "dark" else "#f8fafc"};
+            border: 1px solid {border};
+            border-radius: 12px;
+            padding: 16px;
+            text-align: left;
+        }}
+        .mini-label {{
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.8px;
+            color: {text_secondary};
+            text-transform: uppercase;
+        }}
+        .mini-number {{
+            font-size: 30px;
+            font-weight: 800;
+            color: {text_primary};
+            margin: 4px 0 10px 0;
+        }}
+        .mini-bar-track {{
+            background-color: {border};
+            border-radius: 999px;
+            height: 6px;
+            width: 100%;
+            margin-bottom: 8px;
+        }}
+        .mini-bar-fill {{
+            height: 6px;
+            border-radius: 999px;
+        }}
+        .mini-risk-label {{
+            font-size: 13px;
+            font-weight: 600;
+        }}
+        .model-box {{
+            border: 1px solid {border};
+            border-radius: 12px;
+            padding: 14px 16px;
+            margin-bottom: 12px;
+        }}
+        .model-name {{
+            font-weight: 700;
+            font-size: 15px;
+            color: {text_primary};
+        }}
+        .model-sub {{
+            font-size: 12.5px;
+            color: {text_secondary};
+            margin-top: 4px;
+        }}
+        .version-badge {{
+            float: right;
+            background-color: rgba(52,211,153,0.15);
+            color: #34d399;
+            border: 1px solid rgba(52,211,153,0.35);
+            border-radius: 999px;
+            padding: 3px 10px;
+            font-size: 11px;
+            font-weight: 700;
+        }}
+        .top-badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border: 1px solid {border};
+            border-radius: 999px;
+            padding: 5px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            color: {text_primary};
+            margin-left: 8px;
+        }}
+        .live-dot {{
+            height: 8px;
+            width: 8px;
+            background-color: #34d399;
+            border-radius: 50%;
+            display: inline-block;
+        }}
+        .nav-item-active {{
+            background-color: #10b981;
+            color: white !important;
+            border-radius: 10px;
+            padding: 10px 14px;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }}
+        .nav-item {{
+            color: {text_secondary} !important;
+            padding: 10px 14px;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }}
+        .footer-text {{
+            color: {text_secondary};
+            font-size: 12.5px;
+            padding-top: 14px;
+            border-top: 1px solid {border};
+            margin-top: 10px;
+        }}
+        div.stButton > button {{
+            background-color: #10b981;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-weight: 700;
+            padding: 0.5rem 1rem;
+        }}
+        div.stButton > button:hover {{
+            background-color: #0ea371;
+            color: white;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    return dict(
+        bg_main=bg_main, bg_card=bg_card, border=border,
+        text_primary=text_primary, text_secondary=text_secondary,
+        chart_grid=chart_grid,
+    )
+
+
+colors = inject_css(st.session_state.theme)
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+with st.sidebar:
+    st.markdown(
+        "<div style='font-size:22px;font-weight:800;color:#34d399;'>Pearls AQI</div>"
+        "<div style='font-size:13px;color:#94a3b8;margin-bottom:24px;'>Environmental AI</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div class='nav-item-active'>🌐&nbsp;&nbsp;Global View</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nav-item'>🧩&nbsp;&nbsp;ML Pipelines</div>", unsafe_allow_html=True)
+    st.markdown("<div class='nav-item'>🗄️&nbsp;&nbsp;Model Registry</div>", unsafe_allow_html=True)
+
+    with st.expander("⚙️ API Settings"):
+        new_url = st.text_input("FastAPI base URL", value=st.session_state.api_url)
+        if new_url != st.session_state.api_url:
+            st.session_state.api_url = new_url
+            fetch_predictions.clear()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("Refresh Forecast", use_container_width=True):
+        st.session_state.fetch_nonce += 1
+        fetch_predictions.clear()
+        st.rerun()
+
+# ============================================================
+# TOP BAR
+# ============================================================
+top_left, top_right = st.columns([3, 2])
+with top_left:
+    st.markdown(
+        "<div style='font-size:26px;font-weight:800;'>Pearls AQI Predictor</div>"
+        "<div style='font-size:13.5px;color:#94a3b8;'>Advanced Air Quality Monitoring & 3-Day Forecasting</div>",
+        unsafe_allow_html=True,
+    )
+with top_right:
+    theme_icon = "🌙" if st.session_state.theme == "dark" else "☀️"
+    b1, b2, b3, b4 = st.columns([1.3, 1, 0.6, 0.6])
+    with b1:
+        st.markdown(
+            "<div style='text-align:right;padding-top:8px;'>"
+            "<span class='top-badge'><span class='live-dot'></span> LIVE</span>"
+            "<span class='top-badge'>KARACHI</span></div>",
+            unsafe_allow_html=True,
+        )
+    with b3:
+        if st.button(theme_icon, key="theme_toggle"):
+            st.session_state.theme = "light" if st.session_state.theme == "dark" else "dark"
+            st.rerun()
+
+st.markdown("<div style='margin-bottom:10px;'></div>", unsafe_allow_html=True)
+
+# ============================================================
+# FETCH DATA
+# ============================================================
+data = None
+error_msg = None
+try:
+    with st.spinner("Fetching live prediction from backend..."):
+        data = fetch_predictions(st.session_state.api_url, st.session_state.fetch_nonce)
+except requests.exceptions.ConnectionError:
+    error_msg = (
+        f"Couldn't reach the API at **{st.session_state.api_url}**. "
+        "Make sure your FastAPI backend is running, e.g.:\n\n"
+        "`uvicorn backend_api:app --reload`"
+    )
+except requests.exceptions.Timeout:
+    error_msg = "The API request timed out. The model may still be warming up — try Refresh Forecast in a moment."
+except Exception as exc:
+    error_msg = f"API returned an error: {exc}"
+
+if error_msg:
+    st.error(error_msg)
+    st.stop()
+
+# ---- track prev value across genuinely new fetches (new timestamp) ----
+current_aqi = float(data["current_aqi"])
+day1, day2, day3 = float(data["day1"]), float(data["day2"]), float(data["day3"])
+timestamp = data["timestamp"]
+
+if st.session_state.last_timestamp != timestamp:
+    st.session_state.prev_current_aqi = st.session_state.get("_last_seen_aqi")
+    st.session_state.last_timestamp = timestamp
+    st.session_state["_last_seen_aqi"] = current_aqi
+
+delta = None
+if st.session_state.prev_current_aqi is not None:
+    delta = round(current_aqi - st.session_state.prev_current_aqi, 1)
+
+sync_label = format_sync_time(timestamp)
+
+# ============================================================
+# ROW 1 — CURRENT BASELINE + 3-DAY FORECAST
+# ============================================================
+col1, col2 = st.columns([1, 1.7])
+
+with col1:
+    _, full_risk, color = get_aqi_category(current_aqi)
+    st.markdown(
+        f"""
+        <div class="aqi-card">
+            <div class="aqi-card-title">📡 Current Baseline</div>
+            <div class="aqi-card-subtitle">Karachi Urban Core</div>
+            <div class="aqi-big-number">{current_aqi:.0f}</div>
+            <span class="aqi-badge" style="background-color:{color}22;color:{color};border:1px solid {color}55;">{full_risk}</span>
+            <div class="aqi-divider"></div>
+            <div class="aqi-footer-row">
+                <span>{"📈 " if delta is not None and delta >= 0 else "📉 " if delta is not None else "•"}
+                {(f"<span style='color:#f87171;font-weight:700;'>↑{abs(delta)}</span> vs last sync" if delta and delta > 0
+                  else f"<span style='color:#34d399;font-weight:700;'>↓{abs(delta)}</span> vs last sync" if delta and delta < 0
+                  else "No prior reading yet this session")}</span>
+                <span>Sync: {sync_label}</span>
             </div>
         </div>
-        <div class="header-right">
-            <div class="badge-pill">📍 Karachi</div>
-            <div class="badge-pill">🕒 {timestamp_str}</div>
-        </div>
-    </div>
-""", unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
 
-if "error" in data:
-    st.error(f"Backend Connection Error: {data['error']}")
-else:
-    st.success("Header loaded successfully! Check if this header matches the style you wanted.")
+with col2:
+    st.markdown(
+        """
+        <div class="aqi-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+                <div class="aqi-card-title" style="margin-bottom:0;">✨ Automated 3-Day Forecast</div>
+                <span style="color:#34d399;font-size:13px;font-weight:600;">View Details</span>
+            </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    f1, f2, f3 = st.columns(3)
+    forecast_days = [
+        ("TOMORROW", day1),
+        ("DAY +2", day2),
+        ("DAY +3", day3),
+    ]
+    for col, (label, val) in zip((f1, f2, f3), forecast_days):
+        short_label, _, fcolor = get_aqi_category(val)
+        pct = progress_pct(val)
+        with col:
+            st.markdown(
+                f"""
+                <div class="mini-card">
+                    <div class="mini-label">{label}</div>
+                    <div class="mini-number">{val:.0f}</div>
+                    <div class="mini-bar-track">
+                        <div class="mini-bar-fill" style="width:{pct}%;background-color:{fcolor};"></div>
+                    </div>
+                    <div class="mini-risk-label" style="color:{fcolor};">{short_label}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ============================================================
+# ROW 2 — TRAJECTORY CHART + MODEL REGISTRY
+# ============================================================
+col3, col4 = st.columns([1.7, 1])
+
+with col3:
+    st.markdown(
+        """
+        <div class="aqi-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <div class="aqi-card-title" style="margin-bottom:0;">📈 3-Day Trajectory Forecast</div>
+                <span class="top-badge" style="color:#34d399;border-color:#34d39955;">AQI Overall</span>
+            </div>
+            <div class="aqi-card-subtitle" style="margin-bottom:4px;">
+                Live reading plus model forecasts for the next 3 days
+            </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    x_labels = ["Now", "Day +1", "Day +2", "Day +3"]
+    y_values = [current_aqi, day1, day2, day3]
+    point_colors = [get_aqi_category(v)[2] for v in y_values]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=x_labels,
+            y=y_values,
+            mode="lines+markers+text",
+            line=dict(color="#34d399", width=3, shape="spline", smoothing=1.1),
+            marker=dict(size=16, color=point_colors, line=dict(width=2, color=colors["bg_card"])),
+            text=[f"{v:.0f}" for v in y_values],
+            textposition="top center",
+            textfont=dict(color=colors["text_primary"], size=13),
+            fill="tozeroy",
+            fillcolor="rgba(52,211,153,0.08)",
+            hovertemplate="%{x}: %{y:.1f} AQI<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=10, r=10, t=30, b=10),
+        height=320,
+        showlegend=False,
+        xaxis=dict(showgrid=False, color=colors["text_secondary"]),
+        yaxis=dict(showgrid=True, gridcolor=colors["chart_grid"], color=colors["text_secondary"], zeroline=False),
+        font=dict(color=colors["text_primary"]),
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with col4:
+    model_rows = ""
+    for key, day_label, version in [
+        ("day1", "Day +1 Model", data["day1_model_version"]),
+        ("day2", "Day +2 Model", data["day2_model_version"]),
+        ("day3", "Day +3 Model", data["day3_model_version"]),
+    ]:
+        model_rows += f"""
+        <div class="model-box">
+            <span class="version-badge">v{version}</span>
+            <div class="model-name">{day_label}</div>
+            <div class="model-sub">{MODEL_TYPES[key]} • Registered</div>
+        </div>
+        """
+
+    st.markdown(
+        f"""
+        <div class="aqi-card">
+            <div class="aqi-card-title" style="margin-bottom:14px;">🗄️ Model Registry</div>
+            {model_rows}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# ============================================================
+# FOOTER
+# ============================================================
+st.markdown(
+    f"""
+    <div class="footer-text" style="display:flex;justify-content:space-between;">
+        <span>© {datetime.now().year} Pearls AQI Predictor • Advanced Air Quality Monitoring & 3-Day Forecasting</span>
+        <span>Privacy Policy &nbsp;•&nbsp; Terms of Service &nbsp;•&nbsp; System Status</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)

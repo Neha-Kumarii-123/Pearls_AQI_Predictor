@@ -1,10 +1,10 @@
 from fastapi import FastAPI
-import os
-import hopsworks
-import pandas as pd
 import time
-from dotenv import load_dotenv
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Import the robust live inference function from predict.py
+from src.predict import predict
 
 # Load environment variables from project root
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -19,62 +19,32 @@ CACHE_TTL = 3600  # Cache valid for 1 hour
 _prediction_cache = None
 _prediction_cache_time = 0
 
-# Initialize Hopsworks connection helper
-def get_hopsworks_project():
-    api_key = os.getenv("HOPSWORKS_API_KEY")
-    if not api_key:
-        raise RuntimeError("HOPSWORKS_API_KEY is missing from environment variables.")
-    
-    project = hopsworks.login(
-        api_key_value=api_key,
-        host="eu-west.cloud.hopsworks.ai"
-    )
-    return project
 # ============================================================
 # STARTUP WARM-UP EVENT
 # ============================================================
 @app.on_event("startup")
 async def startup_event():
     """
-    Pre-fetch predictions on server boot so the first user 
+    Pre-fetch live model predictions on server boot so the first user 
     never experiences a cold-start delay.
     """
     global _prediction_cache, _prediction_cache_time
-    print("\n--- Warming up FastAPI prediction cache ---")
+    print("\n--- Warming up FastAPI prediction cache with live model inference ---")
     try:
-        project = get_hopsworks_project()
-        fs = project.get_feature_store()
-        
-        prediction_fg = fs.get_feature_group(
-            name="karachi_aqi_predictions",
-            version=1
-        )
-        
-        df = prediction_fg.read(dataframe_type="pandas")
-        
-        if df is not None and not df.empty:
-            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
-            df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
-            
-            if not df.empty:
-                latest = df.iloc[-1]
-                _prediction_cache = {
-                    "timestamp": str(latest["timestamp"]),
-                    "current_aqi": float(latest["current_aqi"]),
-                    "day1": float(latest["day1"]),
-                    "day2": float(latest["day2"]),
-                    "day3": float(latest["day3"]),
-                    "day1_model_version": int(latest.get("day1_model_version", 1)),
-                    "day2_model_version": int(latest.get("day2_model_version", 1)),
-                    "day3_model_version": int(latest.get("day3_model_version", 1)),
-                }
-                _prediction_cache_time = time.time()
-                print("--- Cache warm-up successful ---")
+        result = predict()
+        if result and "error" not in result:
+            _prediction_cache = result
+            _prediction_cache_time = time.time()
+            print("--- Live cache warm-up successful ---")
+        else:
+            print(f"Cache warm-up returned error: {result.get('error', 'Unknown error')}")
     except Exception as exc:
         print(f"Cache warm-up failed: {exc}")
+
 @app.get("/")
 def root():
-    return {"message": "Karachi AQI Predictor Backend is running successfully."}
+    return {"message": "Karachi AQI Predictor Backend is running successfully with real-time inference."}
+
 @app.get("/predict")
 def get_latest_predictions():
     global _prediction_cache, _prediction_cache_time
@@ -82,40 +52,16 @@ def get_latest_predictions():
     
     # 1. Return in-memory cached response if valid (Within TTL)
     if _prediction_cache is not None and (now - _prediction_cache_time < CACHE_TTL):
-        print("Serving prediction from in-memory cache.")
+        print("Serving live prediction from in-memory cache.")
         return _prediction_cache
 
-    # 2. Otherwise, fetch fresh data from Hopsworks and update cache
+    # 2. Otherwise, run fresh live inference via predict() and update cache
     try:
-        project = get_hopsworks_project()
-        fs = project.get_feature_store()
+        result = predict()
         
-        prediction_fg = fs.get_feature_group(
-            name="karachi_aqi_predictions",
-            version=1
-        )
-        
-        df = prediction_fg.read(dataframe_type="pandas")
-        
-        if df is None or df.empty:
-            return {"error": "No automated predictions found in feature store."}
+        if not result or "error" in result:
+            return {"error": result.get("error", "Failed to generate live prediction.")}
             
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
-        df = df.dropna(subset=["timestamp"]).sort_values("timestamp")
-        
-        latest = df.iloc[-1]
-        
-        result = {
-            "timestamp": str(latest["timestamp"]),
-            "current_aqi": float(latest["current_aqi"]),
-            "day1": float(latest["day1"]),
-            "day2": float(latest["day2"]),
-            "day3": float(latest["day3"]),
-            "day1_model_version": int(latest.get("day1_model_version", 1)),
-            "day2_model_version": int(latest.get("day2_model_version", 1)),
-            "day3_model_version": int(latest.get("day3_model_version", 1)),
-        }
-        
         # Update cache store and timestamp
         _prediction_cache = result
         _prediction_cache_time = now
