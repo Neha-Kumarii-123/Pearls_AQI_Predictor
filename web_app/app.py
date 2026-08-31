@@ -9,7 +9,6 @@ Configure the backend URL either by editing DEFAULT_API_URL below,
 setting the AQI_API_URL environment variable, or using the "API
 Settings" expander in the sidebar at runtime.
 """
-
 import os
 import base64
 from datetime import datetime, timezone

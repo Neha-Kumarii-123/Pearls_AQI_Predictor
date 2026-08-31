@@ -2,6 +2,7 @@ from fastapi import FastAPI
 import time
 from pathlib import Path
 from dotenv import load_dotenv
+from src.explainability import explain_predictions
 
 # Import the robust live inference function from predict.py
 from src.predict import predict
@@ -36,6 +37,14 @@ async def startup_event():
             _prediction_cache = result
             _prediction_cache_time = time.time()
             print("--- Live cache warm-up successful ---")
+
+        # Warm up SHAP
+        res_shap = explain_predictions()
+        if res_shap and "error" not in res_shap:
+            _shap_cache = res_shap
+            _shap_cache_time = time.time()
+            print("--- Startup cache warm-up successful (Predictions + SHAP) ---")
+            
         else:
             print(f"Cache warm-up returned error: {result.get('error', 'Unknown error')}")
     except Exception as exc:
@@ -67,5 +76,29 @@ def get_latest_predictions():
         _prediction_cache_time = now
         
         return result
+    except Exception as exc:
+        return {"error": str(exc)}
+# ============================================================
+# SHAP CACHE CONFIGURATION
+# ============================================================
+_shap_cache = None
+_shap_cache_time = 0
+SHAP_CACHE_TTL = 3600  # 1 hour cache
+
+@app.get("/explain")
+def get_model_explanations():
+    global _shap_cache, _shap_cache_time
+    now = time.time()
+    
+    # Return cached SHAP if valid
+    if _shap_cache is not None and (now - _shap_cache_time < SHAP_CACHE_TTL):
+        print("Serving SHAP explanations from in-memory cache.")
+        return _shap_cache
+
+    try:
+        explanations = explain_predictions()
+        _shap_cache = explanations
+        _shap_cache_time = now
+        return explanations
     except Exception as exc:
         return {"error": str(exc)}
