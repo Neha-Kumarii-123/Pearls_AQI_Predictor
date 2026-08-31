@@ -971,37 +971,43 @@ else:
         features = horizon.get("features", [])
         max_abs = max((abs(float(f["shap_value"])) for f in features), default=0) or 1
 
-        rows_html = ""
-        for f in features:
-            sval = float(f["shap_value"])
-            cls = "positive" if sval >= 0 else "negative"
-            pct = max(4, min(100, round(abs(sval) / max_abs * 100)))
-            sign = "+" if sval >= 0 else ""
-            rows_html += f"""
-            <div class="shap-feature-row">
-                <div class="shap-feature-name">{f["feature"]}</div>
-                <div class="shap-track"><div class="shap-fill {cls}" style="width:{pct}%;"></div></div>
-                <div class="shap-feature-value {cls}">{sign}{sval:.1f}</div>
-            </div>
-            """
-
-        st.markdown(
-            f"""
-            <div class="aqi-card shap-card">
-                <div class="shap-left">
-                    <div class="shap-forecast-label">{label}</div>
-                    <div class="shap-pred-value">{prediction:.0f}</div>
-                    <span class="shap-delta {delta_class}">{delta_sign}{abs(delta):.0f} from Base</span>
-                    <div class="shap-base-label">Base Value: {base_value:.0f}</div>
-                </div>
-                <div class="shap-right">
-                    <div class="shap-features-title">Top Influential Features</div>
-                    {rows_html}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        # Built as flat, single-line HTML (no leading indentation) on purpose.
+        # st.markdown(..., unsafe_allow_html=True) still runs the string
+        # through Streamlit's Markdown parser before injecting the HTML, and
+        # Markdown treats any line indented 4+ spaces as an "indented code
+        # block". The old multi-line triple-quoted f-strings here were
+        # indented past that threshold, so the trailing closing tags got
+        # rendered as a literal `</div>` in a code-block box instead of
+        # being parsed as HTML. One line per element avoids that entirely.
+        rows_html = "".join(
+            '<div class="shap-feature-row">'
+            f'<div class="shap-feature-name">{f["feature"]}</div>'
+            '<div class="shap-track">'
+            f'<div class="shap-fill {"positive" if float(f["shap_value"]) >= 0 else "negative"}" '
+            f'style="width:{max(4, min(100, round(abs(float(f["shap_value"])) / max_abs * 100)))}%;"></div>'
+            '</div>'
+            f'<div class="shap-feature-value {"positive" if float(f["shap_value"]) >= 0 else "negative"}">'
+            f'{"+" if float(f["shap_value"]) >= 0 else ""}{float(f["shap_value"]):.1f}</div>'
+            '</div>'
+            for f in features
         )
+
+        card_html = (
+            '<div class="aqi-card shap-card">'
+            '<div class="shap-left">'
+            f'<div class="shap-forecast-label">{label}</div>'
+            f'<div class="shap-pred-value">{prediction:.0f}</div>'
+            f'<span class="shap-delta {delta_class}">{delta_sign}{abs(delta):.0f} from Base</span>'
+            f'<div class="shap-base-label">Base Value: {base_value:.0f}</div>'
+            '</div>'
+            '<div class="shap-right">'
+            '<div class="shap-features-title">Top Influential Features</div>'
+            f'{rows_html}'
+            '</div>'
+            '</div>'
+        )
+
+        st.markdown(card_html, unsafe_allow_html=True)
 
 # ============================================================
 # FOOTER
