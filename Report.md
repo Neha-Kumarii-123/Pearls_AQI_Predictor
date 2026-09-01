@@ -17,6 +17,7 @@ The core focus of the system is to forecast air quality across three specific fu
 
 To ensure scalability, clean code separation, and reproducibility, the project architecture is broken down into distinct decoupled layers:
 
+```text
 Open-Meteo API (Raw Environmental & Meteorological Data)
           │
           ▼
