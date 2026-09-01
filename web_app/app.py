@@ -90,9 +90,18 @@ def progress_pct(aqi: float) -> int:
     return max(4, min(100, round((aqi / 200) * 100)))
 
 
-def format_sync_time(ts_str: str) -> str:
+def format_sync_time(ts_str):
+    if not ts_str:
+        return "Unknown"
     try:
-        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        if isinstance(ts_str, datetime):
+            ts = ts_str
+        else:
+            ts = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+            
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+            
         now = datetime.now(timezone.utc)
         delta_min = int((now - ts).total_seconds() // 60)
         if delta_min < 1:
