@@ -197,12 +197,48 @@ def inject_css(theme: str):
         #MainMenu {{
             visibility: hidden;
         }}
-        [data-testid="collapsedControl"] {{
-            top: 0.6rem !important;
-            left: 2rem !important;
+                [data-testid="collapsedControl"] {{
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+        }}
+        /* Hide Streamlit's default toggle icon completely — whatever it
+           actually is (svg icon or a font-ligature glyph), this hides
+           every child node inside the toggle button */
+        [data-testid="collapsedControl"] * {{
+            display: none !important;
+            visibility: hidden !important;
+        }}
+        /* Draw a real 3-line hamburger icon on the button itself
+           (middle bar = the element, top/bottom bars via box-shadow) */
+        [data-testid="collapsedControl"]::before {{
+            content: "" !important;
+            display: block !important;
+            visibility: visible !important;
+            width: 18px;
+            height: 2px;
+            background-color: {text_primary};
+            box-shadow: 0 6px 0 {text_primary}, 0 -6px 0 {text_primary};
+            border-radius: 1px;
         }}
         [data-testid="stSidebarCollapseButton"] {{
             margin-top: 0.6rem !important;
+        }}
+                /* Mobile + dark mode: make the default sidebar toggle icon
+           white so it's visible against the dark background.
+           (In light mode text_primary is already dark, so it stays
+           correctly visible there too — no separate rule needed.) */
+        @media (max-width: 768px) {{
+            [data-testid="collapsedControl"] {{
+                color: {text_primary} !important;
+            }}
+            [data-testid="collapsedControl"] svg {{
+                fill: {text_primary} !important;
+                stroke: {text_primary} !important;
+            }}
+            [data-testid="collapsedControl"] * {{
+                color: {text_primary} !important;
+            }}
         }}
         section[data-testid="stSidebar"] {{
             background-color: {bg_sidebar};
