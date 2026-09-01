@@ -1,128 +1,150 @@
-# Engineering Report: Serverless Air Quality Forecasting System
+Aapki table ke andar metrics already included thay, lekin maine usay mazeed clear aur explicitly formatting ke sath update kar diya hai taake har model ka $R^2$ score table mein prominent nazar aaye.
 
-Author: Neha Kumari  
-Role: Lead Engineer & MLOps Developer  
-Project: Pearls AQI Predictor (Karachi Air Quality System)  
-Context: 10Pearls Shine Internship Capstone  
+Aap is final aur updated **`Report.md`** file ko apni repository mein copy aur paste kar dein:
 
----
+```markdown
+# Comprehensive Project Report: Karachi 3-Day AQI Prediction & MLOps Pipeline
 
-## 1. Executive Summary
-
-This report documents the architectural setup, feature engineering methodology, and production fixes for the Pearls AQI Predictor system. The goal of this project is to shift air quality monitoring in Karachi from reactive reporting to proactive 3-day forecasting. 
-
-Rather than deploying a static machine learning script running on local hardware, this system implements a serverless MLOps architecture. Real-time atmospheric telemetry is extracted from external APIs, transformed into domain-specific features, and ingested into a cloud feature store to ensure zero offline/online data skew during model training and inference.
+**Author:** Neha Kumari  
+**Program:** 10Pearls Shine Cohort 9 Internship  
+**Project:** End-to-End Air Quality Index (AQI) Forecasting and Monitoring System  
 
 ---
 
-## 2. Infrastructure & Environment Isolation
+## 1. Executive Summary & Project Introduction
 
-### Cross-Platform Driver & SSL Resolution
-During early development on local Windows environments, native C-library dependencies (confluent-kafka, hops-deltalake, and OpenSSL drivers) triggered runtime path mismatches while establishing secure WebSocket and Kafka streaming connections to Hopsworks Cloud.
+Monitoring and forecasting air quality in a bustling metropolitan city like Karachi is vital for public health awareness and environmental planning. This project was undertaken to build a robust, production-grade Machine Learning Operations (MLOps) pipeline. Instead of relying on a static notebook prototype, the objective was to implement an automated system that handles raw environmental data ingestion, feature store management, multi-horizon model training, REST API serving, and an interactive frontend dashboard for stakeholders.
 
-To eliminate platform-specific discrepancies, the entire development workspace was migrated to a containerized Linux runtime within GitHub Codespaces. This ensured 100% environment parity with production CI/CD execution nodes running on cloud Linux runners.
-
-### Security & Secret Management
-To prevent accidental credential leaks in public version control, all authentication assets (Hopsworks API keys, AQICN API credentials) were decoupled from codebase files and injected dynamically via .env files locally and encrypted environment secrets in GitHub repository settings.
+The core focus of the system is to forecast air quality across three specific future horizons—Day +1 (24 hours ahead), Day +2 (48 hours ahead), and Day +3 (72 hours ahead)—while ensuring transparency through model explainability and automated hazardous condition alerts.
 
 ---
 
-## 3. Feature Pipeline Implementation (src/feature_pipeline.py)
+## 2. System Architecture & Data Flow
 
-The feature pipeline operates as an automated ingestion engine responsible for fetching live atmospheric telemetry, executing feature engineering, and streaming structured vectors into the feature store.
+To ensure scalability, clean code separation, and reproducibility, the project architecture is broken down into distinct decoupled layers:
 
 ```text
-[ AQICN REST API / Open-Meteo API ]
-       │
-       ├── Telemetry (PM2.5, PM10, Temperature, Humidity)
-       ▼
-┌────────────────────────────────────────────────────────┐
-│ Feature Pipeline / Backfill Node                       │
-│ 1. Time Normalization (UTC Unix Epoch)                 │
-│ 2. Domain Feature: Canadian Humidex Algorithm          │
-│ 3. Derived Signal: AQI Change Rate (aqi_change_rate)   │
-└──────────────────────────┬─────────────────────────────┘
-                           │ Batch & Streaming Ingestion
-                           ▼
-          ┌──────────────────────────────────┐
-          │ Hopsworks Cloud Feature Store    │
-          │ Feature Group: karachi_aqi_v3    │
-          └──────────────────────────────────┘
+Open-Meteo API (Raw Environmental & Meteorological Data)
+          │
+          ▼
+ Feature Engineering Pipeline (`src/feature_pipeline.py`)
+          │  - Canonical 100-Feature Contract & Rich Historical Lags
+          ▼
+ Hopsworks Feature Store (`karachi_aqi_features` v6)
+          │
+          ├──> Model Training & Registration (XGBoost & Ridge Regressors)
+          │          │
+          │          ▼
+          │    Hopsworks Model Registry (Artifact & Metrics Tracking)
+          │          │
+          │          ▼
+          └────> Inference Engine (`src/predict.py`)
+                     │
+                     ▼
+          FastAPI Backend (`web_app/backend_api.py`)
+                     │
+                     ▼
+          Streamlit Monitoring Dashboard (`web_app/app.py`)
 
 ```
 
-### Raw Telemetry Ingestion
+---
 
-The ingestion module connects to the AQICN REST API for the Karachi station, pulling raw telemetry parameters:
+## 3. Technology Stack & Tools Used
 
-* pm25: Fine particulate matter (µg/m³)
-* pm10: Coarse particulate matter (µg/m³)
-* temperature: Ambient temperature in Celsius
-* humidity: Relative atmospheric humidity (%)
+The following industry-standard tools and technologies were utilized across different stages of development:
 
-### Feature Engineering & Domain Metrics
-
-#### UTC Timestamp Normalization
-
-To prevent server-side timezone mismatches between local testing nodes and cloud runners (GitHub Actions / AWS), all time dimensions are normalized to UTC Unix timestamps. Temporal signals (hour, day, month, day_of_week) are derived directly from the UTC index.
-
-#### Canadian Humidex Model
-
-Raw temperature and humidity alone do not fully account for atmospheric density changes that affect particulate suspension. The pipeline computes the Canadian Humidex to capture perceived heat and vapor pressure:
-
-Humidex = T + (5/9) * (e - 10)
-
-Where e (vapor pressure in mbar) is calculated as:
-e = 6.11 * 10^((7.5 * T) / (237.7 + T)) * (H / 100)
-
-* T = Air Temperature (°C)
-* H = Relative Humidity (%)
-
-### Feature Store Schema (karachi_aqi_features v3)
-
-Features are registered and stored in the Hopsworks Cloud Feature Store under Feature Group Version 3:
-
-| Feature Name | Data Type | Description |
-| --- | --- | --- |
-| city | String | Target location identifier (karachi) - Primary Key |
-| timestamp | BigInt | Primary key index & event time (UTC Unix timestamp) |
-| pm25 | Double | Primary pollutant metric |
-| pm10 | Double | Coarse particle metric |
-| temperature | Double | Raw ambient temperature |
-| humidity | Double | Raw relative humidity |
-| humidex | Double | Derived atmospheric density heat metric |
-| aqi_change_rate | Double | Derived rate-of-change signal ($\Delta \text{AQI}_t = \text{AQI}_t - \text{AQI}_{t-1}$) |
-| hour | Int | Hourly temporal signal (0–23) |
-| day | Int | Day of month (1–31) |
-| month | Int | Month index (1–12) |
-| day_of_week | Int | Day index (0–6) |
-| target_aqi | Double | Ground truth target variable for training |
+* **Core Programming:** Python 3.10+, Pandas, NumPy for data manipulation and numerical computations.
+* **Machine Learning & Modeling:** Scikit-learn (baseline models), XGBoost (non-linear gradient boosting), Joblib for model serialization.
+* **MLOps & Feature Management:** Hopsworks Feature Store and Model Registry for centralized versioning and feature sharing.
+* **Data Ingestion:** Open-Meteo historical and forecast APIs for robust meteorological and pollutant data streams.
+* **Backend Framework:** FastAPI to handle asynchronous inference requests, caching, and health checks.
+* **Frontend Dashboard:** Streamlit for building an intuitive user interface with live forecast cards and visual alerts.
+* **Model Explainability:** SHAP (SHapley Additive exPlanations) for transparent feature attribution analysis.
+* **Environment & Version Control:** Git, GitHub, Python Virtual Environments (`venv`), and dotenv for secure configuration management.
 
 ---
 
-## 4. Evaluation Criteria Mapping
+## 4. Key Implementation Phases
 
-This project addresses the core requirements set by the industrial evaluation panel:
+### A. Exploratory Data Analysis (EDA) & Data Pipeline Setup
 
-1. External API Ingestion: Successfully integrated real-time REST API connections pulling weather and pollutant vectors for Karachi.
-2. Feature Computation: Engineered temporal signals (hour, day, month) and domain features (humidex). The rate-of-change (Delta AQI) feature is designed for integration into the historical backfill phase.
-3. Feature Store Integration: Successfully registered schema and streamed online data into Hopsworks Cloud via Kafka/Delta Lake drivers.
+Initial exploratory data analysis was performed on historical Karachi weather and air quality records spanning over two years (17,000+ rows). I analyzed temporal trends across hours and days to understand traffic and emission cycles, examining correlations between particulate matter ($PM_{2.5}$, $PM_{10}$), gaseous pollutants, and weather parameters like temperature and humidity. Visual assets capturing these distributions were integrated into the monitoring dashboard.
+
+### B. Feature Engineering & Canonical Feature Contract
+
+To prevent training-serving skew, a strict **100-feature canonical contract** was established. Initial models built solely on basic time attributes (hour, day, month), basic change rates, and simple pollutant readings suffered from limited signal representation. Following mentorship guidance, the feature set was significantly expanded to include rich historical context: multi-hour pollutant lags, rolling statistical means, and standard deviations over recent intervals.
+
+### C. Multi-Horizon Forecasting Models
+
+Instead of a single generalized predictor, distinct models were tailored for each forecast horizon:
+
+* **Day +1:** Powered by an optimized XGBoost regressor to capture complex non-linear short-term patterns.
+* **Day +2 & Day +3:** Built using regularized Ridge regression models to maintain stability and prevent overfitting over extended temporal windows.
+
+### D. Model Explainability & Alerting
+
+The system incorporates SHAP explanations to break down individual predictions, showing users which specific environmental factors (such as wind speed or elevated $PM_{2.5}$) drove a particular forecast. Additionally, a threshold-based alert system was built into the dashboard to trigger visual warning banners when hazardous air quality levels are detected.
 
 ---
-## 5. Backfill Execution & Next Steps
 
-### Phase 2: Historical Backfill Execution (`src/backfill_pipeline.py`) — [COMPLETED]
-* **Multi-Source Ingestion:** Ingested 2 years (Aug 2024 to July 2026) of unbroken hourly Karachi telemetry from Open-Meteo Archival APIs (~17.4K rows).
-* **Derived Signals:** Computed first-order hourly rate-of-change (`aqi_change_rate`) across historical sequences.
-* **Feature Store Integration:** Successfully registered and backfilled batch historical vectors into Hopsworks Feature Store Version 3 (`karachi_aqi_features` v3).
+## 5. Challenges Faced & Practical Solutions Found
 
-### Phase 3: Supervised Model Training & Model Registry — [IN PROGRESS]
-* Train baseline and sequential ML models (Random Forest, LightGBM, XGBoost).
-* Read historical feature groups directly from Hopsworks Feature Store (v3).
-* Register optimal trained model artifacts in the Hopsworks Model Registry.
-* Evaluate performance metrics (MAE, RMSE, R²).
+Building a production-ready MLOps pipeline came with several technical roadblocks that required iterative troubleshooting:
 
-### Phase 4: Serving & Automation — [UPCOMING]
-* Deploy real-time interactive UI via Streamlit.
-* Configure automated hourly cron execution using GitHub Actions.
+1. **Hopsworks Project Creation & Namespace Conflict:**
+* *The Problem:* Initially, while setting up the project on Hopsworks, repeated attempts to create the project failed or threw errors without clear reasons.
+* *The Solution:* Realized that Hopsworks enforces globally unique namespace naming conventions across the platform. By assigning a completely unique and specific project name (`My_AQI_Project`), the project was successfully initialized and provisioned.
 
+
+2. **Live Data Stagnation and API Scale Mismatch:**
+* *The Problem:* Initially, AQICN was integrated for live data fetching, but it resulted in stagnant readings with AQI values persistently locked at 161. Switching to OpenWeather for live data while retaining Open-Meteo for history created a severe scale mismatch between feature ranges, disrupting model predictions.
+* *The Solution:* I unified the entire data pipeline by exclusively utilizing **Open-Meteo** for both historical records and live data fetching, completely removing the unreliable AQICN fallback and OpenWeather integration to ensure uniform data scaling.
+
+
+3. **Overcoming Low Initial $R^2$ Scores:**
+* *The Problem:* Across initial experiments with Random Forest, Deep PyTorch, and baseline Ridge, the Day 1 $R^2$ score stubbornly hovered around 0.4+.
+* *The Solution:* Consulting my mentor clarified that an $R^2$ of ~0.4 is common in noisy AQI forecasting if evaluated against simple time features alone. Following her advice, I performed deeper EDA, dropped random splits in favor of strict time-based splits, and engineered rich historical features (lags and rolling statistics). Consequently, the models successfully beat the persistence baseline and improved consistently through daily training cycles.
+
+
+4. **Feature Mismatch Between Training and Inference:**
+* *The Problem:* Discrepancies occasionally occurred where feature shapes or column orders during inference did not match those registered in Hopsworks.
+* *The Solution:* Enforced a strict canonical feature contract script (`feature_engineering.py`) to guarantee identical feature generation, sorting, and validation checks prior to both training and inference.
+
+
+5. **FastAPI Latency and Hopsworks Query Bottlenecks:**
+* *The Problem:* Initially, every incoming `/predict` request queried the Hopsworks feature store and reloaded models live, taking 13–14 seconds per request and causing noticeable response delays.
+* *The Solution:* Following mentorship advice, the architecture was optimized so that models are loaded once at startup and the latest feature row is cached in memory, refreshing periodically in the background (while keeping responses well within acceptable project thresholds).
+
+
+6. **Frontend UI Conflicts & CSS Errors:**
+* *The Problem:* Custom HTML alert blocks threw `NameError` exceptions due to f-string curly brace clashes inside the Streamlit layout.
+* *The Solution:* Properly escaped CSS syntax within the Streamlit UI rendering logic to isolate page-specific components.
+
+
+
+---
+
+## 6. Model Performance & Evaluation Metrics
+
+Following feature enrichment and time-based cross-validation, the models successfully outperform the standard persistence baseline (predicting tomorrow's AQI based solely on today's value). As expected in multi-step forecasting, performance gracefully degrades over longer horizons as atmospheric uncertainty increases.
+
+The final evaluation metrics and exact $R^2$ scores registered in the Hopsworks Model Registry for each horizon are presented below:
+
+| Horizon & Target | Algorithm | MAE | RMSE | $R^2$ Score |
+| --- | --- | --- | --- | --- |
+| **Day +1 (24-Hour Ahead)** | XGBoost | 6.2814 | 9.2467 | **0.5232** |
+| **Day +2 (48-Hour Ahead)** | Ridge Regression | 8.5285 | 11.7905 | **0.2243** |
+| **Day +3 (72-Hour Ahead)** | Ridge Regression | 9.3922 | 12.4673 | **0.1313** |
+
+* **Observations:** The Day +1 XGBoost model captures short-term non-linear relationships effectively with an $R^2$ of **0.5232**. For Day +2 and Day +3, regularized Ridge regression maintains temporal stability with $R^2$ values of **0.2243** and **0.1313** respectively. These metrics are continuously refreshed and adapted through the automated daily training pipeline.
+
+---
+
+## 7. Conclusion
+
+The Karachi AQI Predictor successfully bridges the gap between theoretical data science and operational MLOps engineering. By resolving API ingestion bottlenecks, structuring rich historical features, integrating Hopsworks for feature/model management, and providing an interactive Streamlit dashboard, this project meets all industrial and academic requirements for robust environmental monitoring.
+
+```
+
+```
