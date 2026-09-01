@@ -1,15 +1,10 @@
-Aapki table ke andar metrics already included thay, lekin maine usay mazeed clear aur explicitly formatting ke sath update kar diya hai taake har model ka $R^2$ score table mein prominent nazar aaye.
 
-Aap is final aur updated **`Report.md`** file ko apni repository mein copy aur paste kar dein:
-
-```markdown
 # Comprehensive Project Report: Karachi 3-Day AQI Prediction & MLOps Pipeline
 
 **Author:** Neha Kumari  
 **Program:** 10Pearls Shine Cohort 9 Internship  
 **Project:** End-to-End Air Quality Index (AQI) Forecasting and Monitoring System  
 
----
 
 ## 1. Executive Summary & Project Introduction
 
@@ -17,13 +12,11 @@ Monitoring and forecasting air quality in a bustling metropolitan city like Kara
 
 The core focus of the system is to forecast air quality across three specific future horizons—Day +1 (24 hours ahead), Day +2 (48 hours ahead), and Day +3 (72 hours ahead)—while ensuring transparency through model explainability and automated hazardous condition alerts.
 
----
 
 ## 2. System Architecture & Data Flow
 
 To ensure scalability, clean code separation, and reproducibility, the project architecture is broken down into distinct decoupled layers:
 
-```text
 Open-Meteo API (Raw Environmental & Meteorological Data)
           │
           ▼
@@ -45,10 +38,6 @@ Open-Meteo API (Raw Environmental & Meteorological Data)
                      │
                      ▼
           Streamlit Monitoring Dashboard (`web_app/app.py`)
-
-```
-
----
 
 ## 3. Technology Stack & Tools Used
 
