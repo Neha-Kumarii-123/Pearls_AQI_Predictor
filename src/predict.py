@@ -195,6 +195,7 @@ def get_latest_v6_row(
             start_time=start_time.to_pydatetime(),
             end_time=now.to_pydatetime(),
             dataframe_type="pandas",
+            online=True
         )
 
     except Exception as exc:
