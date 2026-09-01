@@ -77,8 +77,17 @@ Instead of a single generalized predictor, distinct models were tailored for eac
 The system incorporates SHAP explanations to break down individual predictions, showing users which specific environmental factors (such as wind speed or elevated $PM_{2.5}$) drove a particular forecast. Additionally, a threshold-based alert system was built into the dashboard to trigger visual warning banners when hazardous air quality levels are detected.
 
 ---
+## 5. System Interface and Dashboard Overview
 
-## 5. Challenges Faced & Practical Solutions Found
+The deployed Streamlit monitoring application integrates multiple operational layers of the pipeline into an intuitive web interface:
+
+* **Real-Time Global AQI Monitoring:** Displays live pollutant metrics, latest timestamp verification, and automated feature validation checks.
+* **Multi-Horizon Trajectory Forecasts:** Visualizes Day +1 (XGBoost), Day +2 (Ridge), and Day +3 (Ridge) predicted AQI trends.
+* **Model Explainability (SHAP):** Computes feature contributions dynamically to ensure model transparency.
+
+![Pearls AQI Monitoring Dashboard](aqi_dashboard.png)
+
+## 6. Challenges Faced & Practical Solutions Found
 
 Building a production-ready MLOps pipeline came with several technical roadblocks that required iterative troubleshooting:
 
@@ -117,7 +126,7 @@ Building a production-ready MLOps pipeline came with several technical roadblock
 
 ---
 
-## 6. Model Performance & Evaluation Metrics
+## 7. Model Performance & Evaluation Metrics
 
 Following feature enrichment and time-based cross-validation, the models successfully outperform the standard persistence baseline (predicting tomorrow's AQI based solely on today's value). As expected in multi-step forecasting, performance gracefully degrades over longer horizons as atmospheric uncertainty increases.
 
@@ -133,7 +142,7 @@ The final evaluation metrics and exact $R^2$ scores registered in the Hopsworks 
 
 ---
 
-## 7. Conclusion
+## 8. Conclusion
 
 The Karachi AQI Predictor successfully bridges the gap between theoretical data science and operational MLOps engineering. By resolving API ingestion bottlenecks, structuring rich historical features, integrating Hopsworks for feature/model management, and providing an interactive Streamlit dashboard, this project meets all industrial and academic requirements for robust environmental monitoring.
 
