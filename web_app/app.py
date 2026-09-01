@@ -1,29 +1,28 @@
 """
 KarachiPulse AQI — Streamlit Dashboard
-Connects live to the FastAPI backend's /predict endpoint.
-
-Run with:
-    streamlit run streamlit_app.py
-
-Configure the backend URL either by editing DEFAULT_API_URL below,
-setting the AQI_API_URL environment variable, or using the "API
-Settings" expander in the sidebar at runtime.
+Single-service version: calls prediction and explainability functions directly,
+without making HTTP requests to a FastAPI backend.
 """
+import sys
+from pathlib import Path
 
-import os
+# Parent directory (root) ko sys.path mein add karna taake 'src' mil jaye
+root_dir = Path(__file__).resolve().parent.parent
+if str(root_dir) not in sys.path:
+    sys.path.append(str(root_dir))
 import base64
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
-import streamlit as st
 import plotly.graph_objects as go
+import streamlit as st
+
+from src.explainability import explain_predictions
+from src.predict import predict
 
 APP_DIR = Path(__file__).resolve().parent
 
-# EDA plot files: (relative path from this file, card title, generic caption).
-# Captions describe what each chart shows in general terms only — no invented
-# statistics, since we don't have the underlying summary numbers.
 EDA_PLOTS = [
     ("assets/eda/aqi_historical_trend.png", "Historical AQI Trend",
      "Trailing daily AQI readings across the historical training window."),
@@ -39,15 +38,8 @@ EDA_PLOTS = [
      "Conditions and features associated with high-AQI episodes."),
 ]
 
-# ============================================================
-# CONFIG
-# ============================================================
 DEFAULT_API_URL = os.environ.get("AQI_API_URL", "http://localhost:8000")
 
-# Static, stable metadata about which algorithm powers each horizon.
-# (This does not change request-to-request, so it isn't part of the
-# API response — only the *version numbers* are, and those are read
-# live from /predict below.)
 MODEL_TYPES = {
     "day1": "XGBoost",
     "day2": "Ridge Regression",
@@ -61,9 +53,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ============================================================
-# SESSION STATE
-# ============================================================
 if "theme" not in st.session_state:
     st.session_state.theme = "dark"
 if "api_url" not in st.session_state:
@@ -77,11 +66,9 @@ if "fetch_nonce" not in st.session_state:
 if "page" not in st.session_state:
     st.session_state.page = "global"
 
-# ============================================================
-# AQI CATEGORY HELPERS
-# ============================================================
+
 def get_aqi_category(aqi: float):
-    """Returns (short_label, full_risk_label, color) for an AQI value."""
+    """Return (short_label, full_risk_label, color) for an AQI value."""
     if aqi is None:
         return "Unknown", "No Data", "#64748b"
     if aqi <= 50:
@@ -98,29 +85,9 @@ def get_aqi_category(aqi: float):
 
 
 def progress_pct(aqi: float) -> int:
-    """Fill percentage for the small forecast progress bars, capped at 100."""
     if aqi is None:
         return 0
     return max(4, min(100, round((aqi / 200) * 100)))
-
-
-# ============================================================
-# API CALL
-# ============================================================
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_predictions(api_url: str, _nonce: int):
-    """
-    Calls the FastAPI /predict endpoint. `_nonce` is bumped by the
-    Refresh button to force a fresh call (the backend itself also
-    caches for 1 hour, so this mostly avoids re-hitting it needlessly
-    on unrelated Streamlit reruns like a theme toggle).
-    """
-    resp = requests.get(f"{api_url}/predict", timeout=200)
-    resp.raise_for_status()
-    data = resp.json()
-    if isinstance(data, dict) and "error" in data:
-        raise RuntimeError(data["error"])
-    return data
 
 
 def format_sync_time(ts_str: str) -> str:
@@ -137,28 +104,24 @@ def format_sync_time(ts_str: str) -> str:
         return "Unknown"
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_shap_explanations(api_url: str, _nonce: int):
-    """
-    Calls the FastAPI /explain endpoint. Expected shape:
-    {
-      "day1": {"prediction": .., "base_value": .., "features": [
-          {"feature": .., "shap_value": .., "impact": ..}, ...
-      ]},
-      "day2": {...}, "day3": {...}
-    }
-    """
-    resp = requests.get(f"{api_url}/explain", timeout=20)
-    resp.raise_for_status()
-    data = resp.json()
-    if isinstance(data, dict) and "error" in data:
-        raise RuntimeError(data["error"])
-    return data
+@st.cache_data(ttl=3600, show_spinner=True)
+def fetch_predictions(_nonce: int):
+    """Call the underlying prediction function directly."""
+    result = predict()
+    if isinstance(result, dict) and "error" in result:
+        raise RuntimeError(result["error"])
+    return result
 
 
-# ============================================================
-# THEME / CSS
-# ============================================================
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_shap_explanations(_nonce: int):
+    """Call the underlying explainability function directly."""
+    result = explain_predictions()
+    if isinstance(result, dict) and "error" in result:
+        raise RuntimeError(result["error"])
+    return result
+
+
 def inject_css(theme: str):
     if theme == "dark":
         bg_main = "#0b1120"
@@ -197,20 +160,15 @@ def inject_css(theme: str):
         #MainMenu {{
             visibility: hidden;
         }}
-                [data-testid="collapsedControl"] {{
+        [data-testid="collapsedControl"] {{
             display: flex !important;
             align-items: center !important;
             justify-content: center !important;
         }}
-        /* Hide Streamlit's default toggle icon completely — whatever it
-           actually is (svg icon or a font-ligature glyph), this hides
-           every child node inside the toggle button */
         [data-testid="collapsedControl"] * {{
             display: none !important;
             visibility: hidden !important;
         }}
-        /* Draw a real 3-line hamburger icon on the button itself
-           (middle bar = the element, top/bottom bars via box-shadow) */
         [data-testid="collapsedControl"]::before {{
             content: "" !important;
             display: block !important;
@@ -223,22 +181,6 @@ def inject_css(theme: str):
         }}
         [data-testid="stSidebarCollapseButton"] {{
             margin-top: 0.6rem !important;
-        }}
-                /* Mobile + dark mode: make the default sidebar toggle icon
-           white so it's visible against the dark background.
-           (In light mode text_primary is already dark, so it stays
-           correctly visible there too — no separate rule needed.) */
-        @media (max-width: 768px) {{
-            [data-testid="collapsedControl"] {{
-                color: {text_primary} !important;
-            }}
-            [data-testid="collapsedControl"] svg {{
-                fill: {text_primary} !important;
-                stroke: {text_primary} !important;
-            }}
-            [data-testid="collapsedControl"] * {{
-                color: {text_primary} !important;
-            }}
         }}
         section[data-testid="stSidebar"] {{
             background-color: {bg_sidebar};
@@ -368,7 +310,6 @@ def inject_css(theme: str):
             color: {text_primary};
             margin-left: 8px;
         }}
-        /* ---- Why This Prediction? (SHAP Insights) ---- */
         .shap-card {{
             display: flex;
             gap: 32px;
@@ -447,7 +388,6 @@ def inject_css(theme: str):
         }}
         .shap-feature-value.positive {{ color: #34d399; }}
         .shap-feature-value.negative {{ color: #ef8a99; }}
-        /* ---- Model Registry: ML Pipeline Workflow ---- */
         .pipeline-row {{
             display: flex;
             align-items: center;
@@ -527,11 +467,6 @@ def inject_css(theme: str):
             background-color: #0ea371;
             color: white;
         }}
-
-        /* Sidebar nav buttons (Global Monitoring / EDA Insights when not active)
-           render as plain left-aligned rows instead of green pills, matching
-           the static nav-item look. The Refresh Forecast button stays green
-           via kind="primary". */
         section[data-testid="stSidebar"] div.stButton > button[kind="secondary"] {{
             background-color: transparent;
             color: {text_secondary};
@@ -552,8 +487,6 @@ def inject_css(theme: str):
             color: white;
             width: 100%;
         }}
-
-        /* ---- EDA Insights page: Obsidian Emerald glass-morphism (theme-aware) ---- */
         .eda-breadcrumb {{
             font-size: 12.5px;
             font-weight: 700;
@@ -613,7 +546,6 @@ def inject_css(theme: str):
             display: block;
             border: 1px solid {border};
         }}
-
         @keyframes pulse {{
             0% {{ opacity: 0.4; }}
             50% {{ opacity: 0.9; }}
@@ -627,17 +559,17 @@ def inject_css(theme: str):
         unsafe_allow_html=True,
     )
     return dict(
-        bg_main=bg_main, bg_card=bg_card, border=border,
-        text_primary=text_primary, text_secondary=text_secondary,
+        bg_main=bg_main,
+        bg_card=bg_card,
+        border=border,
+        text_primary=text_primary,
+        text_secondary=text_secondary,
         chart_grid=chart_grid,
     )
 
 
 colors = inject_css(st.session_state.theme)
 
-# ============================================================
-# SIDEBAR
-# ============================================================
 with st.sidebar:
     st.markdown(
         "<div style='font-size:22px;font-weight:800;color:#34d399;'>Pearls AQI</div>"
@@ -680,9 +612,6 @@ with st.sidebar:
             st.rerun()
 
 if st.session_state.page == "eda":
-    # ============================================================
-    # EDA INSIGHTS PAGE
-    # ============================================================
     top_l, top_r = st.columns([3, 1])
     with top_l:
         st.markdown(
@@ -694,7 +623,6 @@ if st.session_state.page == "eda":
             unsafe_allow_html=True,
         )
     with top_r:
-        st.markdown("<div style='padding-top:10px;'></div>", unsafe_allow_html=True)
         if st.button("← Back to Global View", key="back_to_global", use_container_width=True):
             st.session_state.page = "global"
             st.rerun()
@@ -729,9 +657,6 @@ if st.session_state.page == "eda":
     st.stop()
 
 if st.session_state.page == "registry":
-    # ============================================================
-    # MODEL REGISTRY PAGE
-    # ============================================================
     top_l, top_r = st.columns([3, 1])
     with top_l:
         st.markdown(
@@ -743,7 +668,6 @@ if st.session_state.page == "registry":
             unsafe_allow_html=True,
         )
     with top_r:
-        st.markdown("<div style='padding-top:10px;'></div>", unsafe_allow_html=True)
         if st.button("← Back to Global View", key="back_to_global_registry", use_container_width=True):
             st.session_state.page = "global"
             st.rerun()
@@ -751,16 +675,12 @@ if st.session_state.page == "registry":
     registry_data = None
     registry_error = None
     try:
-        registry_data = fetch_predictions(st.session_state.api_url, st.session_state.fetch_nonce)
+        registry_data = fetch_predictions(st.session_state.fetch_nonce)
         if isinstance(registry_data, dict) and "error" in registry_data:
             registry_error = registry_data["error"]
             registry_data = None
-    except requests.exceptions.ConnectionError:
-        registry_error = f"Couldn't reach the API at **{st.session_state.api_url}**."
-    except requests.exceptions.Timeout:
-        registry_error = "The API request timed out. Try refreshing from the Global Monitoring page."
     except Exception as exc:
-        registry_error = f"API returned an error: {exc}"
+        registry_error = f"Prediction system returned an error: {exc}"
 
     if registry_error:
         st.error(registry_error)
@@ -802,9 +722,6 @@ if st.session_state.page == "registry":
     st.stop()
 
 if st.session_state.page == "pipelines":
-    # ============================================================
-    # ML PIPELINES PAGE
-    # ============================================================
     top_l, top_r = st.columns([3, 1])
     with top_l:
         st.markdown(
@@ -816,7 +733,6 @@ if st.session_state.page == "pipelines":
             unsafe_allow_html=True,
         )
     with top_r:
-        st.markdown("<div style='padding-top:10px;'></div>", unsafe_allow_html=True)
         if st.button("← Back to Global View", key="back_to_global_pipelines", use_container_width=True):
             st.session_state.page = "global"
             st.rerun()
@@ -840,13 +756,13 @@ if st.session_state.page == "pipelines":
         if i < len(pipeline_steps) - 1:
             pipeline_html += '<div class="pipeline-arrow">→</div>'
 
-    pipeline_card_html = (
+    st.markdown(
         '<div class="aqi-card">'
         '<div class="aqi-card-title" style="margin-bottom:16px;">🧩 ML Pipeline Workflow</div>'
         f'<div class="pipeline-row">{pipeline_html}</div>'
-        '</div>'
+        '</div>',
+        unsafe_allow_html=True,
     )
-    st.markdown(pipeline_card_html, unsafe_allow_html=True)
 
     st.markdown(
         f"""
@@ -858,11 +774,6 @@ if st.session_state.page == "pipelines":
         unsafe_allow_html=True,
     )
     st.stop()
-
-# ============================================================
-# TOP BAR (Global Monitoring)
-# ============================================================
-
 
 top_left, top_right = st.columns([3, 2])
 with top_left:
@@ -888,9 +799,6 @@ with top_right:
 
 st.markdown("<div style='margin-bottom:10px;'></div>", unsafe_allow_html=True)
 
-# ============================================================
-# FETCH DATA
-# ============================================================
 data = None
 error_msg = None
 
@@ -907,17 +815,9 @@ with loading_placeholder.container():
     )
 
 try:
-    data = fetch_predictions(st.session_state.api_url, st.session_state.fetch_nonce)
-except requests.exceptions.ConnectionError:
-    error_msg = (
-        f"Couldn't reach the API at **{st.session_state.api_url}**. "
-        "Make sure your FastAPI backend is running, e.g.:\n\n"
-        "`uvicorn backend_api:app --reload`"
-    )
-except requests.exceptions.Timeout:
-    error_msg = "The API request timed out. The model may still be warming up — try Refresh Forecast in a moment."
+    data = fetch_predictions(st.session_state.fetch_nonce)
 except Exception as exc:
-    error_msg = f"API returned an error: {exc}"
+    error_msg = f"Prediction system returned an error: {exc}"
 finally:
     loading_placeholder.empty()
 
@@ -925,18 +825,12 @@ if error_msg:
     st.error(error_msg)
     st.stop()
 
-# ---- track prev value across genuinely new fetches (new timestamp) ----
 current_aqi = float(data["current_aqi"])
 day1, day2, day3 = float(data["day1"]), float(data["day2"]), float(data["day3"])
 timestamp = data["timestamp"]
-# extract alert info if present (e.g., for hazardous AQI events)
 alert_info = data.get("alert", {})
 is_hazardous = alert_info.get("is_hazardous", False)
 alert_message = alert_info.get("message", "")
-
-# Agar aapko abhi testing ke liye forcefully dikhana hai toh yeh line use karein:
-# is_hazardous = True
-# alert_message = "CRITICAL ALERT: Hazardous air quality levels detected or forecasted!"
 
 if is_hazardous and alert_message:
     st.error(f"🚨 {alert_message}")
@@ -952,9 +846,6 @@ if st.session_state.prev_current_aqi is not None:
 
 sync_label = format_sync_time(timestamp)
 
-# ============================================================
-# ROW 1 — CURRENT BASELINE + 3-DAY FORECAST
-# ============================================================
 col1, col2 = st.columns([1, 1.7])
 
 with col1:
@@ -969,9 +860,7 @@ with col1:
             <div class="aqi-divider"></div>
             <div class="aqi-footer-row">
                 <span>{"📈 " if delta is not None and delta >= 0 else "📉 " if delta is not None else "•"}
-                {(f"<span style='color:#f87171;font-weight:700;'>↑{abs(delta)}</span> vs last sync" if delta and delta > 0
-                  else f"<span style='color:#34d399;font-weight:700;'>↓{abs(delta)}</span> vs last sync" if delta and delta < 0
-                  else "No prior reading yet this session")}</span>
+                {(f"<span style='color:#f87171;font-weight:700;'>↑{abs(delta)}</span> vs last sync" if delta and delta > 0 else f"<span style='color:#34d399;font-weight:700;'>↓{abs(delta)}</span> vs last sync" if delta and delta < 0 else "No prior reading yet this session")}</span>
                 <span>Sync: {sync_label}</span>
             </div>
         </div>
@@ -1015,9 +904,6 @@ with col2:
             )
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ============================================================
-# ROW 2 — TRAJECTORY CHART (Full Width)
-# ============================================================
 st.markdown(
     """
     <div class="aqi-card">
@@ -1069,9 +955,6 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 st.markdown("</div>", unsafe_allow_html=True)
 
-# ============================================================
-# WHY THIS PREDICTION? — SHAP INSIGHTS
-# ============================================================
 st.markdown(
     """
     <div style="display:flex;align-items:center;gap:14px;margin:8px 0 16px 0;">
@@ -1084,11 +967,7 @@ st.markdown(
 
 shap_error = None
 try:
-    shap_data = fetch_shap_explanations(st.session_state.api_url, st.session_state.fetch_nonce)
-except requests.exceptions.ConnectionError:
-    shap_error = f"Couldn't reach the API at **{st.session_state.api_url}/explain**."
-except requests.exceptions.Timeout:
-    shap_error = "The /explain request timed out — the SHAP cache may still be warming up."
+    shap_data = fetch_shap_explanations(st.session_state.fetch_nonce)
 except Exception as exc:
     shap_error = f"SHAP explanations unavailable: {exc}"
 
@@ -1100,67 +979,51 @@ else:
         if not horizon:
             continue
 
-        prediction = float(horizon["prediction"])
-        base_value = float(horizon["base_value"])
-        
-        # Exact mathematical difference (Prediction minus Base Value)
-        delta = prediction - base_value
-        
-        # Sign aur Class ko strictly delta ke real sign (+ ya -) par depend karein
-        if delta > 0:
-            delta_sign = "↑"
-            delta_class = "positive"
-        elif delta < 0:
-            delta_sign = "↓"
-            delta_class = "negative"
-        else:
-            delta_sign = ""
-            delta_class = "neutral"
+        prediction = float(horizon.get("prediction", 0.0))
+        base_value = float(horizon.get("base_value", 0.0))
+        feature_rows = horizon.get("features", [])
 
-        features = horizon.get("features", [])
-        max_abs = max((abs(float(f["shap_value"])) for f in features), default=0) or 1
-
-        # Built as flat, single-line HTML (no leading indentation) on purpose.
-        # st.markdown(..., unsafe_allow_html=True) still runs the string
-        # through Streamlit's Markdown parser before injecting the HTML, and
-        # Markdown treats any line indented 4+ spaces as an "indented code
-        # block". The old multi-line triple-quoted f-strings here were
-        # indented past that threshold, so the trailing closing tags got
-        # rendered as a literal `</div>` in a code-block box instead of
-        # being parsed as HTML. One line per element avoids that entirely.
-        rows_html = "".join(
-            '<div class="shap-feature-row">'
-            f'<div class="shap-feature-name">{f["feature"]}</div>'
-            '<div class="shap-track">'
-            f'<div class="shap-fill {"positive" if float(f["shap_value"]) >= 0 else "negative"}" '
-            f'style="width:{max(4, min(100, round(abs(float(f["shap_value"])) / max_abs * 100)))}%;"></div>'
-            '</div>'
-            f'<div class="shap-feature-value {"positive" if float(f["shap_value"]) >= 0 else "negative"}">'
-            f'{"+" if float(f["shap_value"]) >= 0 else ""}{float(f["shap_value"]):.1f}</div>'
-            '</div>'
-            for f in features
+        st.markdown(
+            f"""
+            <div class="aqi-card">
+                <div class="shap-card">
+                    <div class="shap-left">
+                        <div class="shap-forecast-label">{label}</div>
+                        <div class="shap-pred-value">{prediction:.0f}</div>
+                        <div class="shap-base-label">Base value: {base_value:.0f}</div>
+                    </div>
+                    <div class="shap-right">
+                        <div class="shap-features-title">Top feature impacts</div>
+            """,
+            unsafe_allow_html=True,
         )
 
-        card_html = (
-            '<div class="aqi-card shap-card">'
-            '<div class="shap-left">'
-            f'<div class="shap-forecast-label">{label}</div>'
-            f'<div class="shap-pred-value">{prediction:.0f}</div>'
-            f'<span class="shap-delta {delta_class}">{delta_sign}{abs(delta):.0f} from Base</span>'
-            f'<div class="shap-base-label">Base Value: {base_value:.0f}</div>'
-            '</div>'
-            '<div class="shap-right">'
-            '<div class="shap-features-title">Top Influential Features</div>'
-            f'{rows_html}'
-            '</div>'
-            '</div>'
+        for item in feature_rows[:5]:
+            feature = str(item.get("feature", "unknown"))
+            shap_value = float(item.get("shap_value", 0.0))
+            impact = item.get("impact", "neutral")
+            width = min(100, max(8, abs(shap_value) * 12))
+            direction = "positive" if shap_value >= 0 else "negative"
+            st.markdown(
+                f"""
+                <div class="shap-feature-row">
+                    <div class="shap-feature-name">{feature}</div>
+                    <div class="shap-track"><div class="shap-fill {direction}" style="width:{width}%;"></div></div>
+                    <div class="shap-feature-value {direction}">{shap_value:.1f}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        st.markdown(
+            """
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-        st.markdown(card_html, unsafe_allow_html=True)
-
-# ============================================================
-# FOOTER
-# ============================================================
 st.markdown(
     f"""
     <div class="footer-text" style="display:flex;justify-content:space-between;">
