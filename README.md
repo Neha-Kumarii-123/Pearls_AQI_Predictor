@@ -3,11 +3,12 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.35%2B-FF4B4B?logo=streamlit&logoColor=white)
+[![Live App](https://img.shields.io/badge/Streamlit-Live%20App-FF4B4B?logo=streamlit&logoColor=white)](https://pearlsaqipredictor-g5cgabkya5ykm6yx4zm5jp.streamlit.app/)
 ![License](https://img.shields.io/badge/License-MIT-lightgrey)
 ![Status](https://img.shields.io/badge/Status-Active%20Deployment-success)
 
 ## Overview / Abstract
-
+> 🚀 **Live App Link:** [View Live Streamlit Dashboard](https://pearlsaqipredictor-g5cgabkya5ykm6yx4zm5jp.streamlit.app/)
 This repository implements an end-to-end Air Quality Index (AQI) forecasting and monitoring system for Karachi, designed to predict near-term air quality conditions across three horizons: Day +1, Day +2, and Day +3. The system combines domain-aware feature engineering, a centralized Hopsworks Feature Store, trained machine learning models, and a unified Streamlit monitoring dashboard for operational visibility.
 
 The core product is a production-oriented MLOps workflow. Feature generation is centralized in the canonical production pipeline, validated against a 100-feature contract, and pushed to the Hopsworks feature group `karachi_aqi_features` version 6. The unified Streamlit application reads the latest available production feature row, loads the corresponding model versions from the Hopsworks Model Registry, executes live multi-horizon forecasting, performs dynamic SHAP explainability calculations, and applies hazard classification logic for high-risk conditions.
