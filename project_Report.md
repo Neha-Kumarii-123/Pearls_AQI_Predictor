@@ -32,13 +32,10 @@ Open-Meteo API (Raw Environmental & Meteorological Data)
           │    Hopsworks Model Registry (Artifact & Metrics Tracking)
           │          │
           │          ▼
-          └────> Inference Engine (`src/predict.py`)
-                     │
+          └────> Unified Streamlit Dashboard & Inference Engine (`web_app/app.py`)
+                     │  - Direct In-App Inference & SHAP Calculations
                      ▼
-          FastAPI Backend (`web_app/backend_api.py`)
-                     │
-                     ▼
-          Streamlit Monitoring Dashboard (`web_app/app.py`)
+             Live End-User Interface (Streamlit Cloud Deployment)
 ```
 ## 3. Technology Stack & Tools Used
 
@@ -81,11 +78,14 @@ The system incorporates SHAP explanations to break down individual predictions, 
 
 The deployed Streamlit monitoring application integrates multiple operational layers of the pipeline into an intuitive web interface:
 
-* **Real-Time Global AQI Monitoring:** Displays live pollutant metrics, latest timestamp verification, and automated feature validation checks.
+* **Real-Time Global AQI Monitoring:** Displays the latest live AQI score,, latest timestamp verification, and automated feature validation checks.
 * **Multi-Horizon Trajectory Forecasts:** Visualizes Day +1 (XGBoost), Day +2 (Ridge), and Day +3 (Ridge) predicted AQI trends.
 * **Model Explainability (SHAP):** Computes feature contributions dynamically to ensure model transparency.
 
 ![Pearls AQI Monitoring Dashboard](aqi_dashboard.png)
+![AQI Exploratory Data Analysis Insights](aqi_insights.png)
+![3-Day AQI Forecast Trends](aqi_forecast_trend.png)
+![SHAP Model Explainability Feature Contributions](aqi_shap.png)
 
 ## 6. Challenges Faced & Practical Solutions Found
 
@@ -124,6 +124,9 @@ Building a production-ready MLOps pipeline came with several technical roadblock
 * *The Problem:* Cloud environments like Streamlit Cloud block default gRPC Arrow Flight ports used by Hopsworks, causing socket timeouts during feature reads. Additionally, running tree-based SHAP calculations dynamically over high-dimensional lagging features introduced noticeable latency during dashboard rendering.
 * *The Solution:* Configured `.read(..., online=True)` to route data queries securely through the Online Feature Store (MySQL) instead of Arrow Flight. Furthermore, optimized model caching and state management in Streamlit to ensure SHAP values compute efficiently without blocking UI responsiveness.
 
+8. **Deployment Constraints, Render Platform Limitations, and Backend Consolidation:**
+* *The Problem:* Initially, the application was structured with a decoupled architecture featuring a separate `backend_api.py` (FastAPI) and `app.py` (Streamlit). However, during deployment, alternative cloud hosting services either required mandatory credit card attachments for server allocation (such as Render) or shifted to paid tiers (such as Hugging Face Spaces). Furthermore, Streamlit Cloud natively hosts single-entry frontend applications and cannot independently spin up a concurrent Uvicorn/FastAPI backend background server in the same container.
+* *The Solution:* After thorough technical research, I refactored the application architecture. I integrated the core FastAPI routing and inference logic directly inside the `app.py` execution flow. This consolidation allowed the entire system to run seamlessly as a unified, lightweight Streamlit application. Consequently, the separate `backend_api.py` file was deprecated and removed from the repository, enabling a completely free, smooth, and robust deployment on Streamlit Cloud without relying on external paid infrastructure or credit card verifications.
 ---
 
 ## 7. Model Performance & Evaluation Metrics
