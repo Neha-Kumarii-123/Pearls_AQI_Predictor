@@ -39,7 +39,7 @@ Open-Meteo API (Raw Environmental & Meteorological Data)
                      │
                      ▼
           Streamlit Monitoring Dashboard (`web_app/app.py`)
-
+```
 ## 3. Technology Stack & Tools Used
 
 The following industry-standard tools and technologies were utilized across different stages of development:
