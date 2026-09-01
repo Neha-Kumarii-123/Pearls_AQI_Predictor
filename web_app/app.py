@@ -862,6 +862,8 @@ if st.session_state.page == "pipelines":
 # ============================================================
 # TOP BAR (Global Monitoring)
 # ============================================================
+
+
 top_left, top_right = st.columns([3, 2])
 with top_left:
     st.markdown(
@@ -927,6 +929,17 @@ if error_msg:
 current_aqi = float(data["current_aqi"])
 day1, day2, day3 = float(data["day1"]), float(data["day2"]), float(data["day3"])
 timestamp = data["timestamp"]
+# extract alert info if present (e.g., for hazardous AQI events)
+alert_info = data.get("alert", {})
+is_hazardous = alert_info.get("is_hazardous", False)
+alert_message = alert_info.get("message", "")
+
+# Agar aapko abhi testing ke liye forcefully dikhana hai toh yeh line use karein:
+# is_hazardous = True
+# alert_message = "CRITICAL ALERT: Hazardous air quality levels detected or forecasted!"
+
+if is_hazardous and alert_message:
+    st.error(f"🚨 {alert_message}")
 
 if st.session_state.last_timestamp != timestamp:
     st.session_state.prev_current_aqi = st.session_state.get("_last_seen_aqi")

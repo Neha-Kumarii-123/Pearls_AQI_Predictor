@@ -118,3 +118,5 @@ joblib==1.5.0
 scikit-learn
 xgboost
 fastapi
+uvicorn[standard]
+shap

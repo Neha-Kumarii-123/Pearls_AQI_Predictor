@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 import time
 from pathlib import Path
 from dotenv import load_dotenv
@@ -13,6 +14,14 @@ load_dotenv(dotenv_path=REPO_ROOT / ".env")
 
 app = FastAPI(title="Karachi AQI Predictor API", version="1.0")
 
+# Allow the Streamlit frontend (running on a different domain) to call this API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # For production, replace "*" with your exact Streamlit Cloud URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # ============================================================
 # CACHE CONFIGURATION & GLOBAL STATE
 # ============================================================
