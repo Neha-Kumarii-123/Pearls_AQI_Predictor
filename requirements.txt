@@ -120,3 +120,4 @@ xgboost
 fastapi
 uvicorn[standard]
 shap
+plotly
