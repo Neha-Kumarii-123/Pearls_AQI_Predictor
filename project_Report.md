@@ -4,7 +4,7 @@
 **Author:** Neha Kumari  
 **Program:** 10Pearls Shine Cohort 9 Internship  
 **Project:** End-to-End Air Quality Index (AQI) Forecasting and Monitoring System  
-
+**Live Application Link:** [pearlsaqipredictor-g5cgabkya5ykm6yx4zm5jp.streamlit.app](https://pearlsaqipredictor-g5cgabkya5ykm6yx4zm5jp.streamlit.app/)
 
 ## 1. Executive Summary & Project Introduction
 
@@ -111,7 +111,9 @@ Building a production-ready MLOps pipeline came with several technical roadblock
 * *The Problem:* Custom HTML alert blocks threw `NameError` exceptions due to f-string curly brace clashes inside the Streamlit layout.
 * *The Solution:* Properly escaped CSS syntax within the Streamlit UI rendering logic to isolate page-specific components.
 
-
+7. **FastAPI Latency, Arrow Flight Restrictions, and SHAP Computation Overheads:**
+* *The Problem:* Cloud environments like Streamlit Cloud block default gRPC Arrow Flight ports used by Hopsworks, causing socket timeouts during feature reads. Additionally, running tree-based SHAP calculations dynamically over high-dimensional lagging features introduced noticeable latency during dashboard rendering.
+* *The Solution:* Configured `.read(..., online=True)` to route data queries securely through the Online Feature Store (MySQL) instead of Arrow Flight. Furthermore, optimized model caching and state management in Streamlit to ensure SHAP values compute efficiently without blocking UI responsiveness.
 
 ---
 
