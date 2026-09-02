@@ -554,6 +554,21 @@ def inject_css():
             fill: #10b981 !important;
             stroke: #10b981 !important;
         }}
+        @media(max-width: 768px) {{
+            .pipeline-row {{
+                flex-direction: column !important;
+                align-items: stretch !important;
+            }}
+            .pipeline-step {{
+                width: 100% !important;
+                min-width: unset !important;
+            }}
+            .pipeline-arrow {{
+                transform: rotate(90deg);
+                text-align: center;
+                margin: 6px 0;
+            }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,
