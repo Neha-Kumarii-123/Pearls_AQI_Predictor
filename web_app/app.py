@@ -54,7 +54,7 @@ st.set_page_config(
 )
 
 if "theme" not in st.session_state:
-    st.session_state.theme = "dark"
+    st.session_state.theme = "light"
 if "api_url" not in st.session_state:
     st.session_state.api_url = DEFAULT_API_URL
 if "last_timestamp" not in st.session_state:
@@ -113,7 +113,7 @@ def format_sync_time(ts_str):
         return "Unknown"
 
 
-@st.cache_data(ttl=3600, show_spinner=True)
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_predictions(_nonce: int):
     """Call the underlying prediction function directly."""
     result = predict()
@@ -130,30 +130,14 @@ def fetch_shap_explanations(_nonce: int):
         raise RuntimeError(result["error"])
     return result
 
-
-def inject_css(theme: str):
-    if theme == "dark":
-        bg_main = "#0b1120"
-        bg_sidebar = "#0a0f1e"
-        bg_card = "#111a2e"
-        border = "#1e293b"
-        text_primary = "#f8fafc"
-        text_secondary = "#94a3b8"
-        chart_grid = "#1e293b"
-        glass_bg = "rgba(23, 31, 51, 0.55)"
-        glass_border = "rgba(78, 222, 163, 0.25)"
-        glass_shadow = "rgba(0,0,0,0.28)"
-    else:
-        bg_main = "#f1f5f9"
-        bg_sidebar = "#ffffff"
-        bg_card = "#ffffff"
-        border = "#e2e8f0"
-        text_primary = "#0f172a"
-        text_secondary = "#64748b"
-        chart_grid = "#e2e8f0"
-        glass_bg = "rgba(255, 255, 255, 0.85)"
-        glass_border = "rgba(16, 185, 129, 0.35)"
-        glass_shadow = "rgba(15, 23, 42, 0.10)"
+def inject_css():
+    bg_main = "#f1f5f9"
+    bg_sidebar = "#ffffff"
+    bg_card = "#ffffff"
+    border = "#e2e8f0"
+    text_primary = "#0f172a"
+    text_secondary = "#64748b"
+    chart_grid = "#e2e8f0"
 
     st.markdown(
         f"""
@@ -168,46 +152,35 @@ def inject_css(theme: str):
             visibility: visible !important;
             display: block !important;
         }}
-        [data-testid="stToolbar"] {{
-            display: none; /* Hides extra developer tools if you want */
-        }}
         #MainMenu {{
             visibility: hidden;
         }}
+        /* Sidebar collapse / expand button styling */
         [data-testid="collapsedControl"] {{
             display: flex !important;
             align-items: center !important;
             justify-content: center !important;
+            background-color: {bg_card} !important;
+            border: 1px solid #10b981 !important;
+            border-radius: 8px !important;
+            width: 38px !important;
+            height: 38px !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+            margin-left: 10px !important;
+            margin-top: 5px !important;
+            z-index: 999999 !important;
         }}
-        [data-testid="collapsedControl"] * {{
-            display: none !important;
-            visibility: hidden !important;
+        [data-testid="collapsedControl"] svg,
+        [data-testid="collapsedControl"] svg path {{
+            fill: #10b981 !important;
+            stroke: #10b981 !important;
         }}
-        [data-testid="collapsedControl"]::before {{
-            content: "" !important;
-            display: block !important;
-            visibility: visible !important;
-            width: 18px;
-            height: 2px;
-            background-color: {text_primary};
-            box-shadow: 0 6px 0 {text_primary}, 0 -6px 0 {text_primary};
-            border-radius: 1px;
+        [data-testid="collapsedControl"]:hover {{
+            background-color: #f8fafc !important;
+            border-color: #0f172a !important;
         }}
-        [data-testid="stSidebarCollapseButton"] {{
-            margin-top: 0.6rem !important;
-        }}
-        section[data-testid="stSidebar"] {{
-            background-color: {bg_sidebar};
-            border-right: 1px solid {border};
-        }}
-        section[data-testid="stSidebar"] * {{
-            color: {text_primary};
-        }}
-        .block-container {{
-            padding-top: 3rem;
-            padding-bottom: 2rem;
-        }}
-
+        
+        /* Baaki aapke cards aur UI classes waise hi rahengi */
         .aqi-card {{
             background-color: {bg_card};
             border: 1px solid {border};
@@ -252,7 +225,7 @@ def inject_css(theme: str):
             color: {text_secondary};
         }}
         .mini-card {{
-            background-color: {bg_main if theme == "dark" else "#f8fafc"};
+            background-color: #f8fafc;
             border: 1px solid {border};
             border-radius: 12px;
             padding: 16px;
@@ -286,32 +259,6 @@ def inject_css(theme: str):
             font-size: 13px;
             font-weight: 600;
         }}
-        .model-box {{
-            border: 1px solid {border};
-            border-radius: 12px;
-            padding: 14px 16px;
-            margin-bottom: 12px;
-        }}
-        .model-name {{
-            font-weight: 700;
-            font-size: 15px;
-            color: {text_primary};
-        }}
-        .model-sub {{
-            font-size: 12.5px;
-            color: {text_secondary};
-            margin-top: 4px;
-        }}
-        .version-badge {{
-            float: right;
-            background-color: rgba(52,211,153,0.15);
-            color: #34d399;
-            border: 1px solid rgba(52,211,153,0.35);
-            border-radius: 999px;
-            padding: 3px 10px;
-            font-size: 11px;
-            font-weight: 700;
-        }}
         .top-badge {{
             display: inline-flex;
             align-items: center;
@@ -323,144 +270,6 @@ def inject_css(theme: str):
             font-weight: 600;
             color: {text_primary};
             margin-left: 8px;
-        }}
-        .shap-card {{
-            display: flex;
-            gap: 32px;
-            flex-wrap: wrap;
-        }}
-        .shap-left {{
-            flex: 0 0 200px;
-        }}
-        .shap-forecast-label {{
-            font-size: 13px;
-            color: {text_secondary};
-            margin-bottom: 6px;
-        }}
-        .shap-pred-value {{
-            font-size: 40px;
-            font-weight: 800;
-            color: {text_primary};
-            line-height: 1;
-        }}
-        .shap-delta {{
-            display: block;
-            font-size: 13px;
-            font-weight: 700;
-            margin-top: 8px;
-        }}
-        .shap-delta.positive {{ color: #f87171; }}
-        .shap-delta.negative {{ color: #34d399; }}
-        .shap-base-label {{
-            font-size: 13px;
-            color: {text_secondary};
-            margin-top: 14px;
-        }}
-        .shap-right {{
-            flex: 1;
-            min-width: 260px;
-            border-left: 1px solid {border};
-            padding-left: 28px;
-        }}
-        .shap-features-title {{
-            font-size: 11px;
-            font-weight: 700;
-            letter-spacing: 0.8px;
-            text-transform: uppercase;
-            color: {text_secondary};
-            margin-bottom: 16px;
-        }}
-        .shap-feature-row {{
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            margin-bottom: 14px;
-        }}
-        .shap-feature-name {{
-            flex: 0 0 90px;
-            font-size: 13px;
-            color: {text_primary};
-        }}
-        .shap-track {{
-            flex: 1;
-            height: 8px;
-            background-color: {border};
-            border-radius: 999px;
-            overflow: hidden;
-        }}
-        .shap-fill {{
-            height: 100%;
-            border-radius: 999px;
-        }}
-        .shap-fill.positive {{ background-color: #34d399; }}
-        .shap-fill.negative {{ background-color: #ef8a99; }}
-        .shap-feature-value {{
-            flex: 0 0 46px;
-            text-align: right;
-            font-size: 13px;
-            font-weight: 700;
-        }}
-        .shap-feature-value.positive {{ color: #34d399; }}
-        .shap-feature-value.negative {{ color: #ef8a99; }}
-        .pipeline-row {{
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            flex-wrap: wrap;
-        }}
-        .pipeline-step {{
-            background-color: {bg_main if theme == "dark" else "#f8fafc"};
-            border: 1px solid {border};
-            border-radius: 12px;
-            padding: 22px 26px;
-            text-align: center;
-            min-width: 140px;
-        }}
-        .pipeline-step.active {{
-            background-color: rgba(52,211,153,0.12);
-            border: 1px solid #34d399;
-        }}
-        .pipeline-icon {{
-            font-size: 22px;
-            margin-bottom: 12px;
-            color: {text_secondary};
-        }}
-        .pipeline-step.active .pipeline-icon {{
-            color: #34d399;
-        }}
-        .pipeline-label {{
-            font-size: 13.5px;
-            font-weight: 600;
-            color: {text_primary};
-        }}
-        .pipeline-step.active .pipeline-label {{
-            color: {text_primary};
-            font-weight: 700;
-        }}
-        .pipeline-arrow {{
-            font-size: 18px;
-            color: {text_secondary};
-        }}
-        .live-dot {{
-            height: 8px;
-            width: 8px;
-            background-color: #34d399;
-            border-radius: 50%;
-            display: inline-block;
-        }}
-        .nav-item-active {{
-            background-color: #10b981;
-            color: white !important;
-            border-radius: 10px;
-            padding: 10px 14px;
-            font-weight: 700;
-            margin-bottom: 6px;
-        }}
-        .nav-item {{
-            color: {text_secondary} !important;
-            padding: 10px 14px;
-            font-weight: 600;
-            margin-bottom: 6px;
         }}
         .footer-text {{
             color: {text_secondary};
@@ -493,7 +302,7 @@ def inject_css(theme: str):
             width: 100%;
         }}
         section[data-testid="stSidebar"] div.stButton > button[kind="secondary"]:hover {{
-            background-color: rgba(255,255,255,0.06);
+            background-color: rgba(0,0,0,0.04);
             color: {text_primary};
         }}
         section[data-testid="stSidebar"] div.stButton > button[kind="primary"] {{
@@ -507,66 +316,227 @@ def inject_css(theme: str):
             letter-spacing: 0.6px;
             text-transform: uppercase;
             color: {text_secondary};
+            margin-bottom: 4px;
         }}
-        .eda-breadcrumb .active {{
+        .eda-breadcrumb span {{
             color: #10b981;
         }}
         .eda-title {{
-            font-size: 32px;
+            font-size: 28px;
             font-weight: 800;
             color: {text_primary};
-            margin: 10px 0 8px 0;
+            margin: 6px 0 6px 0;
         }}
         .eda-subtitle {{
-            font-size: 14.5px;
+            font-size: 14px;
             color: {text_secondary};
-            line-height: 1.55;
+            line-height: 1.5;
             max-width: 820px;
-            margin-bottom: 22px;
+            margin-bottom: 20px;
         }}
         .glass-card {{
-            background: {glass_bg};
-            backdrop-filter: blur(14px);
-            -webkit-backdrop-filter: blur(14px);
-            border: 1px solid {glass_border};
-            border-radius: 16px;
-            padding: 16px;
-            margin-bottom: 22px;
-            box-shadow: 0 8px 32px {glass_shadow};
+            background: #ffffff;
+            border: 1px solid {border};
+            border-radius: 14px;
+            padding: 18px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.03);
         }}
         .glass-card-title {{
-            font-size: 15px;
+            font-size: 16px;
             font-weight: 700;
             color: {text_primary};
-            margin-bottom: 4px;
+            margin-bottom: 2px;
         }}
         .glass-card-caption {{
-            font-size: 12.5px;
+            font-size: 13px;
             color: {text_secondary};
             line-height: 1.4;
-            margin-bottom: 10px;
-        }}
-        .glass-missing {{
-            padding: 48px 16px;
-            text-align: center;
-            color: {text_secondary};
-            font-size: 12.5px;
-            border: 1px dashed {border};
-            border-radius: 10px;
+            margin-bottom: 12px;
         }}
         .glass-card img {{
             width: 100%;
-            border-radius: 10px;
+            border-radius: 8px;
             display: block;
             border: 1px solid {border};
         }}
-        @keyframes pulse {{
-            0% {{ opacity: 0.4; }}
-            50% {{ opacity: 0.9; }}
-            100% {{ opacity: 0.4; }}
+        .pipeline-row {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-top: 14px;
         }}
-        .skeleton-card {{
-            animation: pulse 1.5s ease-in-out infinite;
+        .pipeline-step {{
+            background-color: #f8fafc;
+            border: 1px solid {border};
+            border-radius: 12px;
+            padding: 18px 22px;
+            text-align: center;
+            min-width: 130px;
+            flex: 1;
+        }}
+        .pipeline-step.active {{
+            background-color: rgba(16,185,129,0.1);
+            border: 1px solid #10b981;
+        }}
+        .pipeline-icon {{
+            font-size: 22px;
+            margin-bottom: 8px;
+        }}
+        .pipeline-label {{
+            font-size: 13.5px;
+            font-weight: 600;
+            color: {text_primary};
+        }}
+        .pipeline-step.active .pipeline-label {{
+            color: #10b981;
+            font-weight: 700;
+        }}
+        .pipeline-arrow {{
+            font-size: 18px;
+            color: {text_secondary};
+            font-weight: bold;
+        }}
+        .model-card {{
+            background: #ffffff;
+            border: 1px solid {border};
+            border-top: 4px solid #10b981;
+            border-radius: 14px;
+            padding: 22px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.04);
+            margin-bottom: 15px;
+            transition: all 0.2s ease;
+        }}
+        .model-card:hover {{
+            box-shadow: 0 8px 25px rgba(0,0,0,0.08);
+            transform: translateY(-2px);
+        }}
+        .model-version-tag {{
+            display: inline-block;
+            background-color: rgba(16,185,129,0.1);
+            color: #10b981;
+            font-size: 11.5px;
+            font-weight: 700;
+            padding: 3px 10px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        .model-card-title {{
+            font-size: 18px;
+            font-weight: 800;
+            color: {text_primary};
+            margin-bottom: 4px;
+        }}
+        .model-card-details {{
+            font-size: 13.5px;
+            color: {text_secondary};
+            margin-bottom: 18px;
+        }}
+        .model-card-footer {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px solid {border};
+            padding-top: 12px;
+            font-size: 12.5px;
+            font-weight: 600;
+            color: {text_secondary};
+        }}
+        .model-active-badge {{
+            background-color: #d1fae5;
+            color: #065f46;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+        }}
+        .shap-card {{
+            display: flex;
+            gap: 24px;
+            align-items: flex-start;
+        }}
+        @media(max-width: 768px) {{
+            .shap-card {{ flex-direction: column; }}
+        }}
+        .shap-left {{
+            min-width: 180px;
+            padding-right: 20px;
+            border-right: 1px solid {border};
+        }}
+        .shap-right {{
+            flex: 1;
+        }}
+        .shap-forecast-label {{
+            font-size: 13px;
+            font-weight: 700;
+            color: {text_secondary};
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 2px;
+        }}
+        .shap-pred-value {{
+            font-size: 38px;
+            font-weight: 800;
+            color: {text_primary};
+            line-height: 1.1;
+            margin-bottom: 4px;
+        }}
+        .shap-base-label {{
+            font-size: 12px;
+            color: {text_secondary};
+        }}
+        .shap-features-title {{
+            font-size: 14px;
+            font-weight: 700;
+            color: {text_primary};
+            margin-bottom: 12px;
+        }}
+        .shap-feature-row {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }}
+        .shap-feature-name {{
+            width: 160px;
+            font-weight: 600;
+            color: {text_primary};
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }}
+        .shap-track {{
+            flex: 1;
+            background-color: {border};
+            border-radius: 999px;
+            height: 8px;
+            overflow: hidden;
+        }}
+        .shap-fill {{
+            height: 8px;
+            border-radius: 999px;
+        }}
+        .shap-fill.positive {{
+            background-color: #f87171;
+        }}
+        .shap-fill.negative {{
+            background-color: #34d399;
+        }}
+        .shap-feature-value {{
+            width: 45px;
+            text-align: right;
+            font-weight: 700;
+            font-size: 12.5px;
+        }}
+        .shap-feature-value.positive {{
+            color: #f87171;
+        }}
+        .shap-feature-value.negative {{
+            color: #34d399;
         }}
         </style>
         """,
@@ -581,9 +551,7 @@ def inject_css(theme: str):
         chart_grid=chart_grid,
     )
 
-
-colors = inject_css(st.session_state.theme)
-
+colors = inject_css()
 with st.sidebar:
     st.markdown(
         "<div style='font-size:22px;font-weight:800;color:#34d399;'>Pearls AQI</div>"
@@ -710,14 +678,13 @@ if st.session_state.page == "registry":
             with col:
                 st.markdown(
                     f"""
-                    <div class="aqi-card" style="min-height:200px;">
-                        <span class="version-badge">v{version}</span>
-                        <div class="model-name" style="font-size:18px;margin-top:4px;">{day_label}</div>
-                        <div class="model-sub">{MODEL_TYPES[key]} • Registered</div>
-                        <div class="aqi-divider"></div>
-                        <div class="aqi-footer-row">
+                    <div class="model-card">
+                        <span class="model-version-tag">v{version}</span>
+                        <div class="model-card-title">{day_label}</div>
+                        <div class="model-card-details">{MODEL_TYPES[key]} • Registered</div>
+                        <div class="model-card-footer">
                             <span>{horizon_label}</span>
-                            <span style="color:#34d399;font-weight:600;">Active</span>
+                            <span class="model-active-badge">Active</span>
                         </div>
                     </div>
                     """,
@@ -788,31 +755,20 @@ if st.session_state.page == "pipelines":
         unsafe_allow_html=True,
     )
     st.stop()
-
-top_left, top_right = st.columns([3, 2])
+top_left, top_right = st.columns([3, 1])
 with top_left:
     st.markdown(
         "<div style='font-size:26px;font-weight:800;'>KarachiPulse AQI</div>"
-        "<div style='font-size:13.5px;color:#94a3b8;'>Advanced Air Quality Monitoring & 3-Day Forecasting</div>",
+        "<div style='font-size:13.5px;color:#64748b;'>Advanced Air Quality Monitoring & 3-Day Forecasting</div>",
         unsafe_allow_html=True,
     )
 with top_right:
-    theme_icon = "🌙" if st.session_state.theme == "dark" else "☀️"
-    b1, b2, b3, b4 = st.columns([1.3, 1, 0.6, 0.6])
-    with b1:
-        st.markdown(
-            "<div style='text-align:right;padding-top:8px;'>"
-            "<span class='top-badge'><span class='live-dot'></span> LIVE</span>"
-            "<span class='top-badge'>KARACHI</span></div>",
-            unsafe_allow_html=True,
-        )
-    with b3:
-        if st.button(theme_icon, key="theme_toggle"):
-            st.session_state.theme = "light" if st.session_state.theme == "dark" else "dark"
-            st.rerun()
-
-st.markdown("<div style='margin-bottom:10px;'></div>", unsafe_allow_html=True)
-
+    st.markdown(
+        "<div style='text-align:right;padding-top:8px;'>"
+        "<span class='top-badge'><span class='live-dot'></span> LIVE</span>"
+        "<span class='top-badge'>KARACHI</span></div>",
+        unsafe_allow_html=True,
+    )
 data = None
 error_msg = None
 
