@@ -145,7 +145,6 @@ def inject_css():
         .stApp {{
             background-color: {bg_main};
             color: {text_primary};
-            margin-top: -2.5rem;
         }}
         header[data-testid="stHeader"] {{
             background-color: transparent !important;
