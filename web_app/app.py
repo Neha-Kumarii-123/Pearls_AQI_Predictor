@@ -538,6 +538,23 @@ def inject_css():
         .shap-feature-value.negative {{
             color: #34d399;
         }}
+        /* Mobile view fix: Ensure sidebar toggle button stays visible and clickable */
+        @media (max-width: 768px) {{
+            [data-testid="collapsedControl"] {{
+                display: flex !important;
+                position: fixed !important;
+                top: 10px !important;
+                left: 10px !important;
+                background-color: #ffffff !important;
+                z-index: 9999999 !important;
+            }}
+        }}
+        
+        [data-testid="collapsedControl"] svg,
+        [data-testid="collapsedControl"] svg path {{
+            fill: #10b981 !important;
+            stroke: #10b981 !important;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
