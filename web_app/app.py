@@ -164,7 +164,12 @@ def inject_css(theme: str):
             margin-top: -2.5rem;
         }}
         header[data-testid="stHeader"] {{
-            display: none;
+            background-color: transparent !important;
+            visibility: visible !important;
+            display: block !important;
+        }}
+        [data-testid="stToolbar"] {{
+            display: none; /* Hides extra developer tools if you want */
         }}
         #MainMenu {{
             visibility: hidden;
