@@ -127,7 +127,21 @@ Building a production-ready MLOps pipeline came with several technical roadblock
 8. **Deployment Constraints, Render Platform Limitations, and Backend Consolidation:**
 * *The Problem:* Initially, the application was structured with a decoupled architecture featuring a separate `backend_api.py` (FastAPI) and `app.py` (Streamlit). However, during deployment, alternative cloud hosting services either required mandatory credit card attachments for server allocation (such as Render) or shifted to paid tiers (such as Hugging Face Spaces). Furthermore, Streamlit Cloud natively hosts single-entry frontend applications and cannot independently spin up a concurrent Uvicorn/FastAPI backend background server in the same container.
 * *The Solution:* After thorough technical research, I refactored the application architecture. I integrated the core FastAPI routing and inference logic directly inside the `app.py` execution flow. This consolidation allowed the entire system to run seamlessly as a unified, lightweight Streamlit application. Consequently, the separate `backend_api.py` file was deprecated and removed from the repository, enabling a completely free, smooth, and robust deployment on Streamlit Cloud without relying on external paid infrastructure or credit card verifications.
----
+
+9. **Mobile View Sidebar Toggle & Layout Alignment:**
+* *The Problem:* Following initial deployment, cross-device testing revealed that the sidebar navigation toggle (`collapsedControl`) was missing or obscured in mobile and narrow-viewport views, preventing users from accessing secondary app pages.
+* *Root Cause:* A custom CSS rule applying a negative top margin (`margin-top: -2.5rem;`) to the `.stApp` container pulled the entire layout upward, causing the native header and collapse button to clip out of the viewport.
+* *The Solution:* Removed the conflicting negative top margin and introduced explicit flex alignment, proper stacking order (`z-index`), and responsive rules for the toggle control to ensure consistent visibility across desktop and mobile devices.
+
+10. **GitHub Actions Cron Drift & Automated Feature Pipeline Resilience:**
+* *The Problem:* The feature ingestion pipeline configured for an hourly cron schedule via GitHub Actions experienced runner queuing delays, executing only 4 to 5 times daily instead of precisely every hour (a platform limitation also experienced across the project).
+* *Impact:* Strict cron dependency risked forming gaps in time-series data if runner executions were delayed or skipped.
+* *The Solution:* Refactored the pipeline logic to be state-aware rather than time-schedule dependent:
+  * Programmatically queries the feature store for the latest recorded timestamp upon execution.
+  * Calculates the exact delta of missing hours against the current system time.
+  * Dynamically fetches the precise historical gap range from the Open-Meteo API.
+  * Upserts the fetched data to ensure the feature store remains completely continuous and up-to-date regardless of irregular execution intervals.
+  
 
 ## 7. Model Performance & Evaluation Metrics
 
