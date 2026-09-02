@@ -141,7 +141,13 @@ Building a production-ready MLOps pipeline came with several technical roadblock
   * Calculates the exact delta of missing hours against the current system time.
   * Dynamically fetches the precise historical gap range from the Open-Meteo API.
   * Upserts the fetched data to ensure the feature store remains completely continuous and up-to-date regardless of irregular execution intervals.
-  
+
+11. **Hopsworks Free-Tier Kafka Restrictions, Environment Transitions, and Operating System Migration:**
+* *The Problem:* During initial local development on Windows, data ingestion pipelines faced severe connectivity and socket errors communicating with Hopsworks. Further technical investigation revealed that the Hopsworks free-tier restricts direct Kafka streaming streams. Additionally, executing data-intensive pipelines locally encountered OS-specific dependency bottlenecks. 
+* *The Solution:* 
+  * To bypass restricted Kafka queue streaming on the free tier, forced synchronous ingestion by configuring `fg.insert(df, write_options={"wait_for_job": True})`, which routes uploads directly via backend jobs.
+  * Initially transitioned the workspace to GitHub Codespaces to leverage cloud-based Linux execution environments, successfully running remote development workflows identical to a local VS Code setup.
+  * When GitHub Codespaces free-tier compute credits were exhausted near the project deadline—especially while configuring continuous hourly GitHub Actions automation—I permanently migrated my local development environment to **Ubuntu Linux (HP ProBook)**. This final OS migration provided a stable, native Unix environment, resolving all remaining background threading and networking conflicts for the feature pipelines and final deployment.
 
 ## 7. Model Performance & Evaluation Metrics
 
