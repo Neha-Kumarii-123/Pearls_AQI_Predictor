@@ -4,3 +4,4 @@ requests
 numpy
 pyarrow
 python-dotenv
+hops-deltalake
