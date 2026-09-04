@@ -1,0 +1,6 @@
+hopsworks
+pandas
+requests
+numpy
+pyarrow
+python-dotenv
