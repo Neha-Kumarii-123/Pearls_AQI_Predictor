@@ -485,6 +485,7 @@ class AirQualityFeaturePipeline:
                 start_time=context_start,
                 end_time=context_end,
                 dataframe_type="pandas",
+                read_options={"use_arrow_flight": False}
             )
 
         except Exception as exc:
