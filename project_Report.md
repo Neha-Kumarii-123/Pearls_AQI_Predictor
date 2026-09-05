@@ -152,7 +152,7 @@ Building a production-ready MLOps pipeline came with several technical roadblock
 12. **GitHub Actions Arrow Flight Transport Errors and Feature Retrieval Timeouts:**
 * *The Problem:* During automated execution in the GitHub Actions workflow, the "Fetch, Process and Push Features" pipeline failed unexpectedly with a gRPC transport error (`grpc_status:14`) inside the Hopsworks Arrow Flight client (`arrow_flight_client.py`) as shown in the traceback logs. This caused connection drops and blocked reading v6 historical context data.
 * *The Solution:* We resolved this by explicitly disabling Apache Arrow Flight in the feature group read configuration (`use_arrow_flight: False`). This forced the client to bypass the unstable Flight data transfer channel and fall back to a stable query service, successfully resolving the connection drops.
-![GitHub Actions Feature Pipeline Failure Traceback](feature_pipeline_error.png)
+![GitHub Actions Feature Pipeline Failure Traceback](feature_pipeline_failure_error)
 
 ## 7. Model Performance & Evaluation Metrics
 
