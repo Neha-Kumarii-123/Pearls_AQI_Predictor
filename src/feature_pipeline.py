@@ -389,6 +389,7 @@ class AirQualityFeaturePipeline:
 
             data = feature_group.read(
                 dataframe_type="pandas",
+                read_options={"use_arrow_flight": False}
             )
 
         except Exception as exc:
