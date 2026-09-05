@@ -162,11 +162,11 @@ The final evaluation metrics and exact $R^2$ scores registered in the Hopsworks 
 
 | Horizon & Target | Algorithm | MAE | RMSE | $R^2$ Score |
 | --- | --- | --- | --- | --- |
-| **Day +1 (24-Hour Ahead)** | XGBoost | 6.2814 | 9.2467 | **0.5232** |
-| **Day +2 (48-Hour Ahead)** | Ridge Regression | 8.5285 | 11.7905 | **0.2243** |
-| **Day +3 (72-Hour Ahead)** | Ridge Regression | 9.3922 | 12.4673 | **0.1313** |
+| **Day +1 (24-Hour Ahead)** | XGBoost | 6.1157 | 9.0929 | **0.5414** |
+| **Day +2 (48-Hour Ahead)** | Ridge Regression | 8.4973 | 11.735 | **0.2366** |
+| **Day +3 (72-Hour Ahead)** | Ridge Regression | 8.992 | 12.519 | **0.1318** |
 
-* **Observations:** The Day +1 XGBoost model captures short-term non-linear relationships effectively with an $R^2$ of **0.5232**. For Day +2 and Day +3, regularized Ridge regression maintains temporal stability with $R^2$ values of **0.2243** and **0.1313** respectively. These metrics are continuously refreshed and adapted through the automated daily training pipeline.
+* **Observations:** The Day +1 XGBoost model captures short-term non-linear relationships effectively with an $R^2$ of **0.5414**. For Day +2 and Day +3, regularized Ridge regression maintains temporal stability with $R^2$ values of **0.2366** and **0.1318** respectively. These metrics are continuously refreshed and adapted through the automated daily training pipeline.
 
 ---
 
