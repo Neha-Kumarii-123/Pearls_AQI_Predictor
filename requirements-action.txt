@@ -5,3 +5,4 @@ numpy
 pyarrow
 python-dotenv
 hops-deltalake
+confluent-kafka
