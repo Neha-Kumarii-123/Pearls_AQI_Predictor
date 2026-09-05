@@ -63,9 +63,7 @@ def main():
     df = feature_group.read(
         online=False,
         read_options={
-            "arrow_flight_config": {
-                "timeout": 900
-            }
+            "use_arrow_flight": False
         },
     )
 
